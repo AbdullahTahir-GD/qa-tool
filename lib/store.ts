@@ -79,6 +79,37 @@ export const deleteScript = (planId: string, id: string) =>
 export const updateScript = (planId: string, id: string, upd: Partial<Script>) =>
   save('qf_scripts_' + planId, getScripts(planId).map(s => s.id === id ? { ...s, ...upd } : s))
 
+function copyRowsWithDetails(srcScriptId: string, destScriptId: string) {
+  const rows = getRows(srcScriptId)
+  const newRows = rows.map(r => {
+    const newId = uid()
+    const detail = load('qf_detail_' + r.id, null)
+    if (detail) save('qf_detail_' + newId, detail)
+    return { ...r, id: newId, scriptId: destScriptId }
+  })
+  save('qf_rows_' + destScriptId, newRows)
+}
+
+export const duplicateScript = (planId: string, scriptId: string): Script => {
+  const src = getScripts(planId).find(s => s.id === scriptId)
+  if (!src) throw new Error('Script not found')
+  const copy = saveScript(planId, src.folderId, src.name + ' (Copy)', src.description)
+  copyRowsWithDetails(scriptId, copy.id)
+  return copy
+}
+
+export const duplicateFolder = (planId: string, folderId: string): Folder => {
+  const src = getFolders(planId).find(f => f.id === folderId)
+  if (!src) throw new Error('Folder not found')
+  const copy = saveFolder(planId, src.name + ' (Copy)')
+  const folderScripts = getScripts(planId).filter(s => s.folderId === folderId)
+  folderScripts.forEach(script => {
+    const scriptCopy = saveScript(planId, copy.id, script.name, script.description)
+    copyRowsWithDetails(script.id, scriptCopy.id)
+  })
+  return copy
+}
+
 // Test Rows (cases + headings)
 export const getRows = (scriptId: string): TestRow[] => load('qf_rows_' + scriptId, [])
 export const saveRow = (scriptId: string, title: string, number: string, type: 'case' | 'heading' = 'case'): TestRow => {

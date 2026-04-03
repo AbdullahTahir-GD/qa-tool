@@ -1,10 +1,11 @@
 'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useParams, useRouter } from 'next/navigation'
 import { FileText } from 'lucide-react'
 import {
   getScripts, getRows, saveRow, updateRow, deleteRow,
-  getTestRuns, saveTestRun, deleteTestRun,
+  getTestRuns, saveTestRun, deleteTestRun, updateTestRun,
   getResult, setResult, getResults, getScriptStats,
   getDetail, saveDetail,
   type Script, type TestRow, type TestRun, type TestStatus, type TestResult, type TestCaseDetail
@@ -31,6 +32,7 @@ export default function ScriptPage() {
   // Panel state
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [activeRowId, setActiveRowId] = useState<string | null>(null)
+  const [panelVisible, setPanelVisible] = useState(true)   // can hide/show without losing active run
   const [panelComment, setPanelComment] = useState('')
   const [panelBugId, setPanelBugId] = useState('')
 
@@ -68,6 +70,11 @@ export default function ScriptPage() {
   useEffect(() => { reload() }, [reload])
 
   useEffect(() => {
+    window.addEventListener('qaflow:change', reload)
+    return () => window.removeEventListener('qaflow:change', reload)
+  }, [reload])
+
+  useEffect(() => {
     const close = (e: MouseEvent) => {
       const target = e.target as HTMLElement
       if (!target.closest('[data-rowmenu]')) setRowMenu(null)
@@ -94,8 +101,8 @@ export default function ScriptPage() {
   // ── Add run ──
   const handleAddRun = (e: React.FormEvent) => {
     e.preventDefault()
-    const run = saveTestRun(planId, runTester.trim() || 'anyone', runBuild.trim() || '-')
-    setRunTester(''); setRunBuild(''); setAddingRun(false)
+    const run = saveTestRun(planId, runTester.trim() || 'anyone', '')
+    setRunTester(''); setAddingRun(false)
     reload()
     // auto-select the new run
     setActiveRunId(run.id)
@@ -104,10 +111,12 @@ export default function ScriptPage() {
   // ── Click run column header → select it + open panel on first untested case ──
   const handleSelectRun = (runId: string) => {
     if (activeRunId === runId) {
-      setActiveRunId(null); setActiveRowId(null)
+      // same run clicked — toggle panel visibility instead of deselecting
+      setPanelVisible(v => !v)
       return
     }
     setActiveRunId(runId)
+    setPanelVisible(true)
     // find first not-run case
     const first = caseRows.find(r => {
       const res = resultsMap[runId]?.[r.id]
@@ -198,7 +207,7 @@ export default function ScriptPage() {
         const rowId = activeRowId || rows.find(r => r.type === 'case')?.id
         if (rowId) openDetail(rowId)
       }
-      if (e.key === 'Escape' && detailRowId) closeDetail()
+      if (e.key === 'Escape') { if (detailRowId) closeDetail(); else setPanelVisible(false) }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -207,7 +216,9 @@ export default function ScriptPage() {
   // ── Row right-click menu ──
   const handleRowCtx = (e: React.MouseEvent, rowId: string) => {
     e.preventDefault(); e.stopPropagation()
-    setRowMenu({ x: e.clientX, y: e.clientY, rowId })
+    const x = Math.min(e.clientX, window.innerWidth  - 200 - 8)
+    const y = Math.min(e.clientY, window.innerHeight - 200 - 8)
+    setRowMenu({ x, y, rowId })
   }
 
   const makeHeading = (rowId: string) => {
@@ -221,7 +232,20 @@ export default function ScriptPage() {
 
   const activeRow = rows.find(r => r.id === activeRowId)
   const activeResult = activeRunId && activeRowId ? resultsMap[activeRunId]?.[activeRowId] : undefined
-  const panelOpen = !!activeRunId && !!activeRowId && activeRow?.type === 'case'
+  const panelOpen = !!activeRunId && panelVisible
+  const activeRun = runs.find(r => r.id === activeRunId) ?? null
+  const runIsCompleted = activeRun?.status === 'completed'
+
+  const markRunCompleted = () => {
+    if (!activeRunId) return
+    updateTestRun(planId, activeRunId, { status: 'completed' })
+    reload()
+  }
+  const markRunInProgress = () => {
+    if (!activeRunId) return
+    updateTestRun(planId, activeRunId, { status: 'in_progress' })
+    reload()
+  }
 
   const generatePDF = async () => {
     if (runs.length === 0) return
@@ -380,43 +404,75 @@ export default function ScriptPage() {
   return (
     <div style={{
       display: 'flex',
-      height: 'calc(100vh - 56px - 40px)',
+      height: 'calc(100vh - var(--topnav-height) - 48px)',
       overflow: 'hidden',
       background: 'var(--bg-surface)',
       border: '1px solid var(--border-strong)',
-      borderRadius: 12,
-      boxShadow: '0 2px 20px rgba(0,0,0,0.10)',
+      borderRadius: 14,
+      boxShadow: 'var(--shadow-md)',
     }}>
 
       {/* ══ MAIN ══ */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
 
         {/* Top bar */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', background: 'var(--bg-base-alt)', borderBottom: '1px solid var(--border-strong)', flexShrink: 0, borderRadius: '12px 12px 0 0' }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '10px 18px',
+          background: 'linear-gradient(90deg, var(--bg-elevated) 0%, var(--bg-depth) 100%)',
+          borderBottom: '1px solid var(--border-strong)',
+          flexShrink: 0, borderRadius: '14px 14px 0 0',
+          boxShadow: 'inset 0 -1px 0 var(--border)',
+        }}>
           <button onClick={() => router.push(`/projects/${id}/plan/${planId}`)}
-            style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'none', border: 'none', cursor: 'pointer', padding: '3px 0' }}>
-            ← Back to plan
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 13, color: 'var(--text-secondary)',
+              background: 'var(--bg-surface)', border: '1px solid var(--border-strong)',
+              borderRadius: 7, cursor: 'pointer', padding: '5px 11px',
+              fontWeight: 500, transition: 'all 0.14s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color='var(--text-primary)'; e.currentTarget.style.borderColor='var(--border-accent)' }}
+            onMouseLeave={e => { e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.borderColor='var(--border-strong)' }}>
+            ← Plan
           </button>
-          <div style={{ width: 1, height: 14, background: 'var(--border-strong)' }} />
-          <span style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 600 }}>{script?.name}</span>
+          <div style={{ width:1, height:16, background:'var(--border-strong)' }} />
+          <span style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 700 }}>{script?.name}</span>
           {topStats && activeRunId && (
             <>
-              <div style={{ width: 1, height: 14, background: 'var(--border-strong)' }} />
-              <span style={{ fontSize: 11, color: '#22c55e', fontWeight: 700 }}>● {topStats.pass}</span>
-              <span style={{ fontSize: 11, color: '#ef4444', fontWeight: 700 }}>● {topStats.fail}</span>
-              <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 700 }}>● {topStats.blocked}</span>
-              <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{topStats.done}/{topStats.total} ({topStats.pct}%)</span>
+              <div style={{ width:1, height:16, background:'var(--border-strong)' }} />
+              <span style={{ fontSize:12, color:'var(--color-pass)', fontWeight:700 }}>✓ {topStats.pass}</span>
+              <span style={{ fontSize:12, color:'var(--color-fail)', fontWeight:700 }}>✗ {topStats.fail}</span>
+              <span style={{ fontSize:12, color:'var(--color-blocked)', fontWeight:700 }}>⊘ {topStats.blocked}</span>
+              <span style={{ fontSize:12, color:'var(--text-secondary)', fontWeight:500 }}>{topStats.done}/{topStats.total} ({topStats.pct}%)</span>
             </>
           )}
           <div style={{ flex: 1 }} />
           {runs.length > 0 && (
             <button onClick={generatePDF}
-              style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 14px', background: 'var(--bg-depth)', color: 'var(--text-secondary)', border: '1px solid var(--border-mid)', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-              ↓ Download Report
+              style={{
+                display:'flex', alignItems:'center', gap:6,
+                padding:'6px 14px',
+                background:'var(--bg-depth)', color:'var(--text-body)',
+                border:'1px solid var(--border-strong)', borderRadius:8,
+                fontSize:12.5, fontWeight:600, cursor:'pointer', transition:'all 0.14s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--accent-hover)' }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-body)' }}>
+              ↓ Report
             </button>
           )}
           <button onClick={() => setAddingRun(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 14px', background: '#16a34a', color: 'white', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+            style={{
+              display:'flex', alignItems:'center', gap:6,
+              padding:'6px 16px',
+              background:'linear-gradient(135deg,#16a34a 0%,#15803d 100%)',
+              color:'white', border:'none', borderRadius:8,
+              fontSize:13, fontWeight:700, cursor:'pointer',
+              boxShadow:'0 3px 12px rgba(22,163,74,0.40)', transition:'all 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.boxShadow='0 4px 18px rgba(22,163,74,0.55)'; e.currentTarget.style.transform='translateY(-1px)' }}
+            onMouseLeave={e => { e.currentTarget.style.boxShadow='0 3px 12px rgba(22,163,74,0.40)'; e.currentTarget.style.transform='none' }}>
             ▶ New Run
           </button>
         </div>
@@ -424,56 +480,103 @@ export default function ScriptPage() {
         {/* Script title + run column headers */}
         <div style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)' }}>
           {/* Script info */}
-          <div style={{ flex: 1, padding: '16px 24px', minWidth: 0 }}>
-            <h2 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 4px' }}>{script?.name}</h2>
-            {script?.description && <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: 0 }}>{script.description}</p>}
+          <div style={{ flex: 1, padding: '18px 28px', minWidth: 0, display: 'flex', alignItems: 'center' }}>
+            <div>
+              <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', margin: 0, letterSpacing: '-0.4px' }}>{script?.name}</h2>
+              {script?.description && <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '4px 0 0' }}>{script.description}</p>}
+            </div>
           </div>
 
           {/* Run columns */}
           <div style={{ display: 'flex', flexShrink: 0 }}>
             {runs.map(run => {
               const isActive = activeRunId === run.id
+              const isCompleted = run.status === 'completed'
               const st = getScriptStats(scriptId, run.id)
               return (
                 <div key={run.id}
                   onClick={() => handleSelectRun(run.id)}
                   style={{
-                    width: 110, padding: '10px 12px', borderLeft: '1px solid var(--border)',
-                    cursor: 'pointer', userSelect: 'none',
+                    width: 136, padding: '12px 14px 10px', borderLeft: '1px solid var(--border)',
+                    cursor: 'pointer', userSelect: 'none', position: 'relative', overflow: 'hidden',
                     background: isActive ? 'var(--accent-muted)' : 'transparent',
-                    borderTop: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+                    borderTop: isActive ? '3px solid var(--accent)' : isCompleted ? '3px solid #16a34a' : '3px solid transparent',
                     transition: 'all 0.15s',
-                  }}>
-                  <div style={{ fontSize: 9.5, color: 'var(--text-muted)', marginBottom: 1 }}>number</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{run.number}</div>
-                  <div style={{ fontSize: 9.5, color: 'var(--text-muted)', marginTop: 4 }}>tester</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-body-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{run.tester}</div>
-                  <div style={{ fontSize: 9.5, color: 'var(--text-muted)', marginTop: 3 }}>date</div>
-                  <div style={{ fontSize: 10.5, color: 'var(--text-body-dim)' }}>{run.date}</div>
-                  <div style={{ fontSize: 9.5, color: 'var(--text-muted)', marginTop: 3 }}>build</div>
-                  <div style={{ fontSize: 10.5, color: 'var(--accent-hover)' }}>{run.build}</div>
-                  {/* mini progress */}
-                  <div style={{ marginTop: 8, height: 3, background: 'var(--border-track)', borderRadius: 3, overflow: 'hidden', display: 'flex' }}>
-                    {st.pass > 0 && <div style={{ flex: st.pass, background: '#22c55e' }} />}
-                    {st.fail > 0 && <div style={{ flex: st.fail, background: '#ef4444' }} />}
-                    {st.blocked > 0 && <div style={{ flex: st.blocked, background: '#f59e0b' }} />}
-                    {st.total - st.pass - st.fail - st.blocked > 0 && <div style={{ flex: st.total - st.pass - st.fail - st.blocked, background: 'var(--border-track)' }} />}
+                  }}
+                  onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)' }}
+                  onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}>
+                  {/* Completed watermark */}
+                  {isCompleted && (
+                    <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none', zIndex:1 }}>
+                      <span style={{ fontSize:9.5, fontWeight:900, color:'rgba(34,197,94,0.18)', letterSpacing:'0.15em', textTransform:'uppercase', transform:'rotate(-30deg)', whiteSpace:'nowrap' }}>
+                        COMPLETE
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Run number badge */}
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+                    <div style={{ background: isActive ? 'var(--accent)' : 'var(--bg-depth)', borderRadius:6, padding:'2px 9px' }}>
+                      <span style={{ fontSize:12, fontWeight:700, color: isActive ? 'white' : 'var(--text-secondary)', letterSpacing:'0.04em' }}>RUN {run.number}</span>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 3, textAlign: 'center' }}>{st.done}/{st.total} {st.pct}%</div>
+
+                  {/* Tester */}
+                  <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:'var(--text-muted)', marginBottom:2 }}>Tester</div>
+                  <div style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:8 }}>{run.tester}</div>
+
+                  {/* Date + Build in a row */}
+                  <div style={{ display:'flex', gap:10, marginBottom:10 }}>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:'var(--text-muted)', marginBottom:2 }}>Date</div>
+                      <div style={{ fontSize:12, color:'var(--text-body)', whiteSpace:'nowrap' }}>{run.date}</div>
+                    </div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, color:'var(--accent-hover)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginTop:14 }}>{run.build || '—'}</div>
+                    </div>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div style={{ height:5, background:'var(--border-track)', borderRadius:3, overflow:'hidden', display:'flex', marginBottom:5 }}>
+                    {st.pass > 0    && <div style={{ flex: st.pass,    background: '#22c55e' }} />}
+                    {st.fail > 0    && <div style={{ flex: st.fail,    background: '#ef4444' }} />}
+                    {st.blocked > 0 && <div style={{ flex: st.blocked, background: '#f59e0b' }} />}
+                    {st.total - st.pass - st.fail - st.blocked > 0 && <div style={{ flex: st.total - st.pass - st.fail - st.blocked, background:'var(--border-track)' }} />}
+                  </div>
+                  <div style={{ fontSize:12, fontWeight:600, color:'var(--text-secondary)', marginBottom:8 }}>{st.done}/{st.total} &nbsp;<span style={{ color:'var(--text-muted)', fontWeight:400 }}>{st.pct}%</span></div>
+
+                  {/* Toggle panel button — always visible when run is active */}
+                  {isActive && (
+                    <button onClick={e => { e.stopPropagation(); setPanelVisible(v => !v) }}
+                      style={{
+                        background: panelVisible ? 'var(--bg-depth)' : 'var(--accent-muted)',
+                        border: panelVisible ? '1px solid var(--border)' : '1px solid var(--border-accent)',
+                        borderRadius:6, cursor:'pointer',
+                        color: panelVisible ? 'var(--text-muted)' : 'var(--accent-hover)',
+                        fontSize:11, fontWeight:600, padding:'4px 8px', marginBottom:6,
+                        display:'block', width:'100%', textAlign:'center', transition:'all 0.12s',
+                      }}>
+                      {panelVisible ? '× Close Panel' : '▶ Open Panel'}
+                    </button>
+                  )}
+
+                  {/* Remove button */}
                   <button onClick={e => { e.stopPropagation(); if (confirm('Delete run?')) { deleteTestRun(planId, run.id); if (activeRunId === run.id) { setActiveRunId(null); setActiveRowId(null) } reload() } }}
-                    style={{ marginTop: 4, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 10, padding: 0, display: 'block', width: '100%', textAlign: 'left' }}
-                    onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
-                    onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}>
-                    ✕ remove
+                    style={{ background:'none', border:'1px solid var(--border)', borderRadius:5, cursor:'pointer', color:'var(--text-muted)', fontSize:11, padding:'3px 8px', display:'block', width:'100%', textAlign:'center', transition:'all 0.12s' }}
+                    onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.1)'; e.currentTarget.style.color='#f87171'; e.currentTarget.style.borderColor='rgba(239,68,68,0.3)' }}
+                    onMouseLeave={e => { e.currentTarget.style.background='none'; e.currentTarget.style.color='var(--text-muted)'; e.currentTarget.style.borderColor='var(--border)' }}>
+                    ✕ Remove
                   </button>
                 </div>
               )
             })}
 
             {/* + add run button */}
-            <div style={{ width: 44, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 16, borderLeft: '1px solid var(--border)' }}>
+            <div style={{ width: 52, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 16, borderLeft: '1px solid var(--border)' }}>
               <button onClick={() => setAddingRun(true)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#22c55e', fontSize: 22, lineHeight: 1, padding: 4 }}
+                style={{ width:32, height:32, borderRadius:8, background:'rgba(34,197,94,0.12)', border:'1px solid rgba(34,197,94,0.3)', cursor:'pointer', color:'#22c55e', fontSize:22, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center', transition:'all 0.14s' }}
+                onMouseEnter={e => { e.currentTarget.style.background='rgba(34,197,94,0.22)' }}
+                onMouseLeave={e => { e.currentTarget.style.background='rgba(34,197,94,0.12)' }}
                 title="Add test run">+</button>
             </div>
           </div>
@@ -491,61 +594,64 @@ export default function ScriptPage() {
 
           {rows.map((row, idx) => {
             const isHeading = row.type === 'heading'
-            const isActiveRow = activeRowId === row.id && activeRunId
+            const isActiveRow = activeRowId === row.id
             const num = String(idx + 1).padStart(4, '0')
 
             return (
               <div key={row.id}
                 onContextMenu={e => handleRowCtx(e, row.id)}
+                onClick={() => { if (!isHeading) { if (activeRunId) handleCellClick(activeRunId, row.id); else setActiveRowId(row.id) } }}
                 style={{
                   display: 'flex', alignItems: 'center',
                   borderBottom: '1px solid var(--border)',
-                  minHeight: isHeading ? 38 : 34,
+                  minHeight: isHeading ? 44 : 40,
+                  cursor: isHeading ? 'default' : 'pointer',
                   background: isHeading
-                    ? 'var(--bg-row-heading)'
-                    : isActiveRow ? 'var(--accent-subtle)' : 'transparent',
-                  transition: 'background 0.1s',
+                    ? 'var(--bg-elevated)'
+                    : isActiveRow ? 'rgba(99,102,241,0.18)' : 'transparent',
+                  borderLeft: !isHeading && isActiveRow ? '3px solid var(--accent)' : '3px solid transparent',
+                  transition: 'background 0.1s, border-color 0.1s',
                 }}
-                onMouseEnter={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'var(--border-subtle)' }}
-                onMouseLeave={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'transparent' }}>
+                onMouseEnter={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'var(--bg-hover)' }}
+                onMouseLeave={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'transparent'; else if (isActiveRow) e.currentTarget.style.background = 'rgba(99,102,241,0.18)' }}>
 
                 {/* Row number */}
-                <div style={{ width: 52, padding: '0 10px 0 16px', fontSize: 11, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
+                <div style={{ width: 58, padding: '0 10px 0 16px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
                   {num}
                 </div>
 
                 {/* Test case icon — left click opens menu */}
-                <div style={{ width: 22, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 26, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   {!isHeading && (
                     <div
-                      onClick={e => { e.stopPropagation(); setRowMenu({ x: e.clientX, y: e.clientY, rowId: row.id }) }}
-                      style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, borderRadius: 3 }}
-                      onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')}
+                      onClick={e => { e.stopPropagation(); const x=Math.min(e.clientX,window.innerWidth-200-8); const y=Math.min(e.clientY,window.innerHeight-200-8); setRowMenu({ x, y, rowId: row.id }) }}
+                      style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 3, borderRadius: 4 }}
+                      onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-depth)')}
                       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                     >
-                      <FileText size={13} color="var(--text-muted)" strokeWidth={1.5} />
+                      <FileText size={14} color="var(--text-secondary)" strokeWidth={1.5} />
                     </div>
                   )}
                 </div>
 
                 {/* Title + detail trigger */}
-                <div style={{ flex: 1, padding: '0 12px', minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, cursor: isHeading ? 'default' : activeRunId ? 'pointer' : 'default' }}
-                  onClick={() => { if (!isHeading && activeRunId) handleCellClick(activeRunId, row.id) }}>
+                <div style={{ flex: 1, padding: '0 14px', minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
                   {editingRowId === row.id ? (
                     <input autoFocus value={editTitle}
                       onChange={e => setEditTitle(e.target.value)}
                       onBlur={() => { if (editTitle.trim()) updateRow(scriptId, row.id, { title: editTitle.trim() }); setEditingRowId(null); reload() }}
                       onKeyDown={e => { if (e.key === 'Enter') { if (editTitle.trim()) updateRow(scriptId, row.id, { title: editTitle.trim() }); setEditingRowId(null); reload() } if (e.key === 'Escape') setEditingRowId(null) }}
-                      style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: '1px solid var(--accent)', outline: 'none', fontSize: 13, color: 'var(--text-primary)', padding: '2px 0' }} />
+                      style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: '2px solid var(--accent)', outline: 'none', fontSize: 14, color: 'var(--text-primary)', padding: '2px 0' }} />
                   ) : (
                     <>
                       <span
                         onDoubleClick={() => { setEditingRowId(row.id); setEditTitle(row.title) }}
                         style={{
-                          fontSize: 13,
+                          fontSize: isHeading ? 14 : 14,
                           fontWeight: isHeading ? 700 : 400,
                           color: isHeading ? 'var(--text-primary)' : 'var(--text-body)',
                           flex: 1, lineHeight: 1.5,
+                          letterSpacing: isHeading ? '0.01em' : 'normal',
                         }}>
                         {isHeading ? row.title : (row.number ? `${row.number}: ${row.title}` : row.title)}
                       </span>
@@ -555,12 +661,12 @@ export default function ScriptPage() {
                           title="Test case details (D)"
                           style={{
                             background: 'none', border: 'none', cursor: 'pointer',
-                            fontSize: 13, lineHeight: 1, padding: '2px 4px', borderRadius: 3, flexShrink: 0,
-                            color: detailRowId === row.id ? 'var(--accent)' : 'var(--text-dimmer)',
+                            fontSize: 16, lineHeight: 1, padding: '2px 6px', borderRadius: 4, flexShrink: 0,
+                            color: detailRowId === row.id ? 'var(--accent)' : 'var(--text-secondary)',
                             transition: 'color 0.15s',
                           }}
-                          onMouseEnter={e => { if (detailRowId !== row.id) e.currentTarget.style.color = 'var(--text-muted)' }}
-                          onMouseLeave={e => { if (detailRowId !== row.id) e.currentTarget.style.color = 'var(--text-dimmer)' }}>
+                          onMouseEnter={e => { if (detailRowId !== row.id) e.currentTarget.style.color = 'var(--text-primary)' }}
+                          onMouseLeave={e => { if (detailRowId !== row.id) e.currentTarget.style.color = 'var(--text-secondary)' }}>
                           ≡
                         </button>
                       )}
@@ -571,170 +677,249 @@ export default function ScriptPage() {
                 {/* Result cells per run */}
                 {runs.map(run => {
                   if (isHeading) {
-                    return <div key={run.id} style={{ width: 110, height: 34, borderLeft: '1px solid var(--border-subtle)', flexShrink: 0, background: 'var(--border-subtle)' }} />
+                    return <div key={run.id} style={{ width: 136, height: 44, borderLeft: '1px solid var(--border-subtle)', flexShrink: 0, background: 'var(--bg-elevated)' }} />
                   }
                   const res = resultsMap[run.id]?.[row.id]
                   const st = res?.status && res.status !== 'not_run' ? STATUS_ICONS[res.status] : null
                   const isCellActive = activeRunId === run.id && activeRowId === row.id
                   return (
                     <div key={run.id}
-                      onClick={() => handleCellClick(run.id, row.id)}
+                      onClick={e => { e.stopPropagation(); handleCellClick(run.id, row.id) }}
                       style={{
-                        width: 110, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        width: 136, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
                         borderLeft: '1px solid var(--border-subtle)', cursor: 'pointer', flexShrink: 0,
                         background: isCellActive ? 'var(--accent-muted)' : activeRunId === run.id ? 'var(--accent-subtle)' : 'transparent',
                         transition: 'background 0.1s',
                       }}
                       onMouseEnter={e => { if (!isCellActive) e.currentTarget.style.background = 'var(--border-mid)' }}
                       onMouseLeave={e => { if (!isCellActive) e.currentTarget.style.background = isCellActive ? 'var(--accent-muted)' : activeRunId === run.id ? 'var(--accent-subtle)' : 'transparent' }}>
-                      {st && <span style={{ fontSize: 16, color: st.color, fontWeight: 700, lineHeight: 1 }}>{st.icon}</span>}
+                      {st && <span style={{ fontSize: 18, color: st.color, fontWeight: 700, lineHeight: 1 }}>{st.icon}</span>}
                     </div>
                   )
                 })}
 
                 {/* Spacer for + column */}
-                <div style={{ width: 44, flexShrink: 0 }} />
+                <div style={{ width: 52, flexShrink: 0 }} />
               </div>
             )
           })}
 
           {/* Add new row input */}
-          <div style={{ display: 'flex', alignItems: 'center', minHeight: 36, borderBottom: '1px solid var(--border-subtle)' }}>
-            <div style={{ width: 52, padding: '0 10px 0 16px', fontSize: 11, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
+          <div style={{ display: 'flex', alignItems: 'center', minHeight: 42, borderBottom: '1px solid var(--border-subtle)' }}>
+            <div style={{ width: 58, padding: '0 10px 0 16px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
               {String(rows.length + 1).padStart(4, '0')}
             </div>
-            <div style={{ width: 22, flexShrink: 0 }} />
+            <div style={{ width: 26, flexShrink: 0 }} />
             <input ref={addInputRef} value={newTitle}
               onChange={e => setNewTitle(e.target.value)}
               onKeyDown={handleAddRow}
               placeholder="Type test case title and press Enter..."
-              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 13, color: 'var(--text-secondary)', padding: '6px 12px' }} />
+              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 14, color: 'var(--text-secondary)', padding: '8px 14px' }} />
           </div>
 
           {/* Tip */}
-          <div style={{ padding: '14px 24px', fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.8 }}>
-            <div>• Press <strong style={{ color: 'var(--text-muted)' }}>Enter</strong> to add a new row</div>
-            <div>• <strong style={{ color: 'var(--text-muted)' }}>Double-click</strong> any row to edit text</div>
-            <div>• <strong style={{ color: 'var(--text-muted)' }}>Right-click</strong> any row → <strong style={{ color: 'var(--text-muted)' }}>"Make Heading"</strong> to turn it into a section heading</div>
+          <div style={{ padding: '14px 28px', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 2 }}>
+            <div>• Press <strong style={{ color: 'var(--text-body)' }}>Enter</strong> to add a new row</div>
+            <div>• <strong style={{ color: 'var(--text-body)' }}>Double-click</strong> any row to edit text</div>
+            <div>• <strong style={{ color: 'var(--text-body)' }}>Right-click</strong> any row → <strong style={{ color: 'var(--text-body)' }}>"Make Heading"</strong> to turn it into a section heading</div>
             <div>• Click a <strong style={{ color: 'var(--text-muted)' }}>run column</strong> to select it, then click any row to mark result</div>
             <div>• Click the <strong style={{ color: 'var(--text-muted)' }}>▭ icon</strong> or press <strong style={{ color: 'var(--text-muted)' }}>D</strong> to open the detail panel for a test case</div>
           </div>
         </div>
       </div>
 
-      {/* ══ RIGHT PANEL ══ */}
+      {/* ══ RIGHT PANEL (TestPad-style floating) ══ */}
       {panelOpen && (
-        <div style={{ width: 290, borderLeft: '1px solid var(--border-strong)', background: 'var(--bg-surface)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-          {/* Panel header */}
-          <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg-base-alt)' }}>
-            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: topStats ? 10 : 0 }}>
-              <div style={{ fontSize:13, fontWeight:800, color:'var(--text-primary)', letterSpacing:'-0.2px' }}>
-                Testing Run <span style={{ color:'var(--accent)' }}>#{runs.find(r => r.id === activeRunId)?.number}</span>
-              </div>
-              <button onClick={() => { setActiveRunId(null); setActiveRowId(null) }}
-                style={{ background:'var(--bg-depth)', border:'1px solid var(--border-strong)', borderRadius:7,
-                  cursor:'pointer', color:'var(--text-secondary)', fontSize:12, fontWeight:600,
-                  padding:'5px 12px', transition:'all 0.15s' }}
+        <div style={{
+          width: 365,
+          flexShrink: 0,
+          alignSelf: 'flex-start',
+          position: 'relative',
+          zIndex: 91,
+          display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+          background: 'var(--bg-elevated)',
+          borderLeft: '2px solid var(--border-strong)',
+          boxShadow: '-4px 0 24px rgba(0,0,0,0.22)',
+          maxHeight: '100%',
+        }}>
+          {/* Header */}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'11px 14px', borderBottom:'1px solid var(--border)', flexShrink:0, background:'var(--bg-depth)' }}>
+            <span style={{ fontSize:12, fontWeight:800, color:'var(--text-primary)', letterSpacing:'0.06em', textTransform:'uppercase' }}>
+              Testing Run {activeRun?.number}
+            </span>
+            <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+              <button onClick={() => setPanelVisible(false)}
+                style={{ background:'var(--bg-surface)', border:'1px solid var(--border-mid)', borderRadius:5, cursor:'pointer', color:'var(--text-secondary)', fontSize:11, fontWeight:600, padding:'4px 10px', transition:'all 0.13s' }}
                 onMouseEnter={e => { e.currentTarget.style.background='#ef4444'; e.currentTarget.style.color='white'; e.currentTarget.style.borderColor='#ef4444' }}
-                onMouseLeave={e => { e.currentTarget.style.background='var(--bg-depth)'; e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.borderColor='var(--border-strong)' }}>
-                ✕ Close
+                onMouseLeave={e => { e.currentTarget.style.background='var(--bg-surface)'; e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.borderColor='var(--border-mid)' }}>
+                close
               </button>
+              <span style={{ fontSize:10.5, color:'var(--text-muted)', background:'var(--bg-surface)', border:'1px solid var(--border-mid)', borderRadius:4, padding:'4px 7px', fontWeight:600, letterSpacing:'0.04em' }}>ESC</span>
             </div>
-            {topStats && (
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:6 }}>
-                {[
-                  { label:'Pass',    value: topStats.pass,    color:'#22c55e', bg:'rgba(34,197,94,0.1)' },
-                  { label:'Fail',    value: topStats.fail,    color:'#ef4444', bg:'rgba(239,68,68,0.1)' },
-                  { label:'Blocked', value: topStats.blocked, color:'#f59e0b', bg:'rgba(245,158,11,0.1)' },
-                  { label:`${topStats.pct}%`, value: `${topStats.done}/${topStats.total}`, color:'var(--text-secondary)', bg:'var(--bg-depth)' },
-                ].map(({label, value, color, bg}) => (
-                  <div key={label} style={{ background:bg, borderRadius:7, padding:'6px 4px', textAlign:'center' }}>
-                    <div style={{ fontSize:16, fontWeight:800, color, lineHeight:1 }}>{value}</div>
-                    <div style={{ fontSize:10, color:'var(--text-muted)', marginTop:3, fontWeight:500 }}>{label}</div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
 
-          {/* IN PROGRESS / COMPLETED toggle */}
-          <div style={{ display: 'flex', gap: 0, padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-            <button style={{ flex: 1, padding: '7px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '6px 0 0 6px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+          {/* Stats + progress bar */}
+          {topStats && (
+            <>
+              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 14px 5px', flexShrink:0 }}>
+                <span style={{ fontSize:12, color:'#22c55e', fontWeight:700 }}>● {topStats.pass}</span>
+                <span style={{ fontSize:12, color:'#ef4444', fontWeight:700 }}>● {topStats.fail}</span>
+                <span style={{ fontSize:12, color:'#f59e0b', fontWeight:700 }}>● {topStats.blocked}</span>
+                <span style={{ fontSize:12, color:'#3b82f6', fontWeight:700 }}>● {topStats.query}</span>
+                <span style={{ flex:1 }} />
+                <span style={{ fontSize:12, color:'var(--text-body)', fontWeight:600 }}>{topStats.done}/{topStats.total}</span>
+                <span style={{ fontSize:12, color:'var(--text-muted)', fontWeight:500 }}>{topStats.pct}%</span>
+              </div>
+              <div style={{ height:4, background:'var(--border-track)', margin:'0 14px 10px', borderRadius:2, overflow:'hidden', display:'flex', flexShrink:0 }}>
+                {topStats.pass > 0    && <div style={{ flex:topStats.pass,    background:'#22c55e' }} />}
+                {topStats.fail > 0    && <div style={{ flex:topStats.fail,    background:'#ef4444' }} />}
+                {topStats.blocked > 0 && <div style={{ flex:topStats.blocked, background:'#f59e0b' }} />}
+                {(topStats.total - topStats.pass - topStats.fail - topStats.blocked) > 0 && <div style={{ flex:topStats.total - topStats.pass - topStats.fail - topStats.blocked, background:'var(--border-track)' }} />}
+              </div>
+            </>
+          )}
+
+          {/* IN PROGRESS / COMPLETED tabs */}
+          <div style={{ display:'flex', margin:'0 14px 10px', borderRadius:7, overflow:'hidden', border:'1px solid var(--border-mid)', flexShrink:0 }}>
+            <button onClick={markRunInProgress}
+              style={{ flex:1, padding:'8px', fontSize:11, fontWeight:700, cursor:'pointer', border:'none', transition:'all 0.15s',
+                background: !runIsCompleted ? '#16a34a' : 'var(--bg-depth)',
+                color: !runIsCompleted ? 'white' : 'var(--text-secondary)',
+              }}>
               IN PROGRESS
             </button>
-            <button style={{ flex: 1, padding: '7px', background: 'var(--bg-depth)', color: 'var(--text-secondary)', border: '1px solid var(--border-mid)', borderLeft: 'none', borderRadius: '0 6px 6px 0', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+            <button onClick={markRunCompleted}
+              style={{ flex:1, padding:'8px', fontSize:11, fontWeight:700, cursor:'pointer', border:'none', borderLeft:'1px solid var(--border-mid)', transition:'all 0.15s',
+                background: runIsCompleted ? '#16a34a' : 'var(--bg-depth)',
+                color: runIsCompleted ? 'white' : 'var(--text-secondary)',
+              }}>
               COMPLETED
             </button>
           </div>
 
-          {/* Active row title */}
-          <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Testing:</div>
-            <p style={{ fontSize: 12, color: 'var(--text-body)', margin: 0, lineHeight: 1.5 }}>
-              {activeRow?.number ? `${activeRow.number}: ` : ''}{activeRow?.title}
-            </p>
-            {activeResult && activeResult.status !== 'not_run' && (
-              <div style={{ marginTop: 6, fontSize: 10, padding: '3px 8px', borderRadius: 5, display: 'inline-block', background: activeResult.status === 'pass' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)', color: activeResult.status === 'pass' ? '#22c55e' : '#ef4444', fontWeight: 700, textTransform: 'uppercase' }}>
-                Current: {activeResult.status}
+          {/* Scrollable content */}
+          <div style={{ overflowY:'auto', display:'flex', flexDirection:'column' }}>
+            {runIsCompleted ? (
+              /* ── COMPLETED view ── */
+              <div style={{ padding:'0 14px 16px', display:'flex', flexDirection:'column', gap:12 }}>
+                <div style={{ background:'var(--bg-depth)', borderRadius:8, padding:'14px', border:'1px solid var(--border-mid)' }}>
+                  <p style={{ fontSize:13, color:'var(--text-body)', margin:'0 0 12px', lineHeight:1.65, fontStyle:'italic' }}>
+                    This test run has been marked &apos;completed&apos;, finalising the results.
+                  </p>
+                  <button onClick={generatePDF}
+                    style={{ width:'100%', padding:'9px', background:'var(--bg-surface)', color:'var(--text-primary)', border:'1px solid var(--border-strong)', borderRadius:7, fontSize:12.5, fontWeight:600, cursor:'pointer', transition:'all 0.13s' }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--accent-hover)' }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-primary)' }}>
+                    view the test report
+                  </button>
+                </div>
+                <div style={{ background:'var(--bg-depth)', borderRadius:8, padding:'14px', border:'1px solid var(--border-mid)' }}>
+                  <p style={{ fontSize:13, color:'var(--text-body)', margin:'0 0 12px', lineHeight:1.65, fontStyle:'italic' }}>
+                    If further testing is required, or a change needs to be recorded, please put it back into &apos;in progress&apos;.
+                  </p>
+                  <button onClick={markRunInProgress}
+                    style={{ width:'100%', padding:'9px', background:'var(--bg-surface)', color:'var(--text-primary)', border:'1px solid var(--border-strong)', borderRadius:7, fontSize:12.5, fontWeight:600, cursor:'pointer', transition:'all 0.13s' }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--accent-hover)' }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-primary)' }}>
+                    go back to in-progress
+                  </button>
+                </div>
+                <div style={{ background:'var(--bg-depth)', borderRadius:8, padding:'14px', border:'1px solid var(--border-mid)' }}>
+                  <p style={{ fontSize:13, color:'var(--text-body)', margin:'0 0 12px', lineHeight:1.65, fontStyle:'italic' }}>
+                    Alternatively, use the Retest option if you want to prepare for a re-run of this test run, for example on a new build.
+                  </p>
+                  <button onClick={() => setAddingRun(true)}
+                    style={{ width:'100%', padding:'9px', background:'var(--bg-surface)', color:'var(--text-primary)', border:'1px solid var(--border-strong)', borderRadius:7, fontSize:12.5, fontWeight:600, cursor:'pointer', transition:'all 0.13s' }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--accent-hover)' }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-primary)' }}>
+                    start a retest
+                  </button>
+                </div>
               </div>
+            ) : (
+              /* ── IN PROGRESS view ── */
+              <>
+                {activeRow && activeRow.type === 'case' && (
+                  <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
+                    <div style={{ fontSize:10, color:'var(--text-muted)', marginBottom:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em' }}>Testing:</div>
+                    <p style={{ fontSize:12.5, color:'var(--text-body)', margin:0, lineHeight:1.5 }}>
+                      {activeRow.number ? `${activeRow.number}: ` : ''}{activeRow.title}
+                    </p>
+                    {activeResult && activeResult.status !== 'not_run' && (
+                      <div style={{ marginTop:6, fontSize:10, padding:'3px 8px', borderRadius:5, display:'inline-block', fontWeight:700, textTransform:'uppercase',
+                        background: activeResult.status==='pass' ? 'rgba(34,197,94,0.15)' : activeResult.status==='fail' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
+                        color: activeResult.status==='pass' ? '#22c55e' : activeResult.status==='fail' ? '#ef4444' : '#f59e0b',
+                      }}>
+                        Current: {activeResult.status}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {!activeRow && (
+                  <div style={{ padding:'16px 14px', fontSize:12, color:'var(--text-muted)', fontStyle:'italic' }}>
+                    Click a test case row to start marking results.
+                  </div>
+                )}
+
+                {/* Comments */}
+                <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
+                  <label style={{ fontSize:10, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6, display:'block' }}>COMMENTS</label>
+                  <textarea value={panelComment} onChange={e => setPanelComment(e.target.value)} onBlur={savePanelNote}
+                    placeholder="enter any comments here"
+                    rows={3}
+                    style={{ width:'100%', padding:'7px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:6, fontSize:12, color:'var(--text-body)', resize:'none', outline:'none', fontFamily:'inherit', boxSizing:'border-box' }} />
+                </div>
+
+                {/* Bug tracking */}
+                <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
+                  <label style={{ display:'block', fontSize:10, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>BUG TRACKING</label>
+                  <input value={panelBugId} onChange={e => setPanelBugId(e.target.value)} onBlur={savePanelNote}
+                    placeholder="enter a bug number here"
+                    style={{ width:'100%', padding:'7px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:6, fontSize:12, color:'var(--text-body)', outline:'none', boxSizing:'border-box' }} />
+                </div>
+
+                {/* Action buttons */}
+                <div style={{ padding:'12px 14px', flexShrink:0 }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
+                    <button onClick={() => handlePanelStatus('pass')}
+                      style={{ padding:'11px', background:'#16a34a', color:'white', border:'none', borderRadius:7, fontSize:14, fontWeight:700, cursor:'pointer', letterSpacing:'0.03em' }}>
+                      PASS ✓
+                    </button>
+                    <button onClick={() => handlePanelStatus('fail')}
+                      style={{ padding:'11px', background:'#dc2626', color:'white', border:'none', borderRadius:7, fontSize:14, fontWeight:700, cursor:'pointer', letterSpacing:'0.03em' }}>
+                      FAIL ✗
+                    </button>
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:6, marginBottom:8 }}>
+                    {([
+                      { s:'blocked' as TestStatus, label:'BLOCKED', color:'#f59e0b', border:'rgba(245,158,11,0.3)' },
+                      { s:'query'   as TestStatus, label:'QUERY',   color:'#3b82f6', border:'rgba(59,130,246,0.3)' },
+                      { s:'exclude' as TestStatus, label:'EXCLUDE', color:'#64748b', border:'rgba(100,116,139,0.3)' },
+                    ] as const).map(({ s, label, color, border }) => (
+                      <button key={s} onClick={() => handlePanelStatus(s)}
+                        style={{ padding:'7px 4px', background:'var(--bg-depth)', color, border:`1px solid ${border}`, borderRadius:6, fontSize:10.5, fontWeight:700, cursor:'pointer', textTransform:'uppercase' }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+                    <button onClick={() => handlePanelNav('prev')}
+                      style={{ padding:'9px', background:'var(--bg-depth)', color:'var(--text-secondary)', border:'1px solid var(--border-mid)', borderRadius:7, fontSize:12, fontWeight:700, cursor:'pointer', transition:'all 0.13s' }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--text-primary)' }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-mid)'; e.currentTarget.style.color='var(--text-secondary)' }}>
+                      ◀ PREV
+                    </button>
+                    <button onClick={() => handlePanelNav('next')}
+                      style={{ padding:'9px', background:'var(--bg-depth)', color:'var(--text-secondary)', border:'1px solid var(--border-mid)', borderRadius:7, fontSize:12, fontWeight:700, cursor:'pointer', transition:'all 0.13s' }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--text-primary)' }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-mid)'; e.currentTarget.style.color='var(--text-secondary)' }}>
+                      NEXT ▶
+                    </button>
+                  </div>
+                </div>
+              </>
             )}
-          </div>
-
-          {/* Comments */}
-          <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <label style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>COMMENTS</label>
-            </div>
-            <textarea value={panelComment} onChange={e => setPanelComment(e.target.value)} onBlur={savePanelNote}
-              placeholder="enter any comments here"
-              rows={3}
-              style={{ width: '100%', padding: '7px 10px', background: 'var(--bg-depth)', border: '1px solid var(--border-mid)', borderRadius: 6, fontSize: 12, color: 'var(--text-body)', resize: 'none', outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-          </div>
-
-          {/* Bug tracking */}
-          <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-            <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>BUG TRACKING</label>
-            <input value={panelBugId} onChange={e => setPanelBugId(e.target.value)} onBlur={savePanelNote}
-              placeholder="enter a bug number here"
-              style={{ width: '100%', padding: '7px 10px', background: 'var(--bg-depth)', border: '1px solid var(--border-mid)', borderRadius: 6, fontSize: 12, color: 'var(--text-body)', outline: 'none', boxSizing: 'border-box' }} />
-          </div>
-
-          {/* PASS / FAIL buttons */}
-          <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
-              <button onClick={() => handlePanelStatus('pass')}
-                style={{ padding: '11px', background: '#16a34a', color: 'white', border: 'none', borderRadius: 7, fontSize: 14, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.03em' }}>
-                PASS ✓
-              </button>
-              <button onClick={() => handlePanelStatus('fail')}
-                style={{ padding: '11px', background: '#dc2626', color: 'white', border: 'none', borderRadius: 7, fontSize: 14, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.03em' }}>
-                FAIL ✗
-              </button>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
-              {[
-                { s: 'blocked' as TestStatus, label: 'BLOCKED', bg: 'var(--bg-depth)', color: '#f59e0b', border: 'rgba(245,158,11,0.3)' },
-                { s: 'query' as TestStatus,   label: 'QUERY',   bg: 'var(--bg-depth)', color: '#3b82f6', border: 'rgba(59,130,246,0.3)' },
-                { s: 'exclude' as TestStatus, label: 'EXCLUDE', bg: 'var(--bg-depth)', color: '#64748b', border: 'rgba(100,116,139,0.3)' },
-              ].map(({ s, label, bg, color, border }) => (
-                <button key={s} onClick={() => handlePanelStatus(s)}
-                  style={{ padding: '7px 4px', background: bg, color, border: `1px solid ${border}`, borderRadius: 6, fontSize: 10.5, fontWeight: 700, cursor: 'pointer', textTransform: 'uppercase' }}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* PREV / NEXT */}
-          <div style={{ padding: '10px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flexShrink: 0, marginTop: 'auto' }}>
-            <button onClick={() => handlePanelNav('prev')}
-              style={{ padding: '9px', background: 'var(--bg-depth)', color: 'var(--text-secondary)', border: '1px solid var(--border-mid)', borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-              ◀ PREV
-            </button>
-            <button onClick={() => handlePanelNav('next')}
-              style={{ padding: '9px', background: 'var(--bg-depth)', color: 'var(--text-secondary)', border: '1px solid var(--border-mid)', borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-              NEXT ▶
-            </button>
           </div>
         </div>
       )}
@@ -754,7 +939,7 @@ export default function ScriptPage() {
           {/* Backdrop */}
           <div onClick={closeDetail} style={{ position: 'fixed', inset: 0, zIndex: 90 }} />
           <div style={{
-            position: 'fixed', top: 'var(--topnav-height)', right: 0,
+            position: 'fixed', top: 'var(--topnav-height)', right: panelOpen ? 365 : 0,
             width: 340, height: 'calc(100vh - var(--topnav-height))',
             borderLeft: '1px solid var(--border-mid)',
             background: 'var(--bg-base-alt)',
@@ -762,6 +947,7 @@ export default function ScriptPage() {
             zIndex: 110,
             boxShadow: '-4px 0 24px rgba(0,0,0,0.25)',
             overflow: 'hidden',
+            transition: 'right 0.2s ease',
           }}>
             {/* Header */}
             <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, flexShrink: 0, background: 'var(--bg-surface)' }}>
@@ -821,22 +1007,22 @@ export default function ScriptPage() {
         )
       })()}
 
-      {/* Right-click menu */}
-      {rowMenu && (
+      {/* Right-click menu (portalled to body so position:fixed is always viewport-relative) */}
+      {rowMenu && createPortal(
         <>
-          <div onClick={() => setRowMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 490 }} />
+          <div onClick={() => setRowMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 9490 }} />
           <div
             data-rowmenu
             style={{
               position: 'fixed',
-              left: rowMenu.x + 2,
-              top: rowMenu.y + 2,
+              left: rowMenu.x,
+              top: rowMenu.y,
               background: 'var(--bg-surface)',
               border: '1px solid var(--border-strong)',
               borderRadius: 10,
               padding: '5px 0',
               minWidth: 200,
-              zIndex: 500,
+              zIndex: 9500,
               boxShadow: '0 8px 32px rgba(0,0,0,0.15), 0 2px 8px rgba(0,0,0,0.08)',
             }}>
             {/* Only show TC number if available */}
@@ -864,7 +1050,8 @@ export default function ScriptPage() {
             <div style={{ height: 1, background: 'var(--border)', margin: '5px 0' }} />
             <MenuItem icon="✕" label="Delete row" onClick={() => { deleteRow(scriptId, rowMenu.rowId); setRowMenu(null); reload() }} danger />
           </div>
-        </>
+        </>,
+        document.body
       )}
 
       {/* New Run modal */}
@@ -877,12 +1064,6 @@ export default function ScriptPage() {
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 5 }}>Tester Name</label>
                 <input autoFocus value={runTester} onChange={e => setRunTester(e.target.value)}
                   placeholder="e.g. Hamdan - QA"
-                  style={{ width: '100%', padding: '9px 12px', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 13, color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box' }} />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 5 }}>Build / Version</label>
-                <input value={runBuild} onChange={e => setRunBuild(e.target.value)}
-                  placeholder="e.g. v1.17.0"
                   style={{ width: '100%', padding: '9px 12px', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 13, color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box' }} />
               </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
