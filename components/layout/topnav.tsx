@@ -43,22 +43,43 @@ export function TopnavContent() {
 
   return (
     <>
-      {/* Hamburger — three clean lines */}
+      {/* Hamburger — animates to × when sidebar open */}
       <button
         onClick={toggle}
         title={open ? 'Collapse sidebar' : 'Expand sidebar'}
         style={{
-          display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 4.5,
-          padding: '7px 9px', marginRight: 10,
+          display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 0,
+          width: 34, height: 34, marginRight: 10,
           background: 'none', border: 'none', cursor: 'pointer',
-          borderRadius: 8, flexShrink: 0, transition: 'background 0.15s',
+          borderRadius: 8, flexShrink: 0, transition: 'background 0.15s', position: 'relative',
         }}
         onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-elevated)')}
         onMouseLeave={e => (e.currentTarget.style.background = 'none')}
       >
-        <span style={{ display:'block', width:17, height:2, background:'var(--text-secondary)', borderRadius:2, transition:'all 0.2s' }} />
-        <span style={{ display:'block', width:13, height:2, background:'var(--text-secondary)', borderRadius:2, transition:'all 0.2s' }} />
-        <span style={{ display:'block', width:17, height:2, background:'var(--text-secondary)', borderRadius:2, transition:'all 0.2s' }} />
+        <span style={{
+          display: 'block', width: 16, height: 2,
+          background: 'var(--text-secondary)', borderRadius: 2,
+          position: 'absolute',
+          transition: 'transform 0.22s ease, opacity 0.22s ease, top 0.22s ease',
+          top: open ? '50%' : 'calc(50% - 5px)',
+          transform: open ? 'translateY(-50%) rotate(45deg)' : 'translateY(0)',
+        }} />
+        <span style={{
+          display: 'block', width: 12, height: 2,
+          background: 'var(--text-secondary)', borderRadius: 2,
+          position: 'absolute', top: '50%',
+          transition: 'opacity 0.15s ease, transform 0.15s ease',
+          opacity: open ? 0 : 1,
+          transform: open ? 'scaleX(0)' : 'translateY(-50%)',
+        }} />
+        <span style={{
+          display: 'block', width: 16, height: 2,
+          background: 'var(--text-secondary)', borderRadius: 2,
+          position: 'absolute',
+          transition: 'transform 0.22s ease, opacity 0.22s ease, top 0.22s ease',
+          top: open ? '50%' : 'calc(50% + 3px)',
+          transform: open ? 'translateY(-50%) rotate(-45deg)' : 'translateY(0)',
+        }} />
       </button>
 
       {/* Mini brand when sidebar closed */}
@@ -77,29 +98,29 @@ export function TopnavContent() {
       )}
 
       {/* Breadcrumb / Title */}
-      <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:5 }}>
         {meta ? (
-          <div style={{ display:'flex', alignItems:'center', gap:7 }}>
-            <span style={{ color:'var(--accent)', opacity:0.9 }}>{meta.icon}</span>
-            <span style={{ fontSize:15, fontWeight:700, color:'var(--text-primary)', letterSpacing:'-0.2px' }}>{meta.label}</span>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <span style={{ color:'var(--accent)', opacity:0.85, display:'flex' }}>{meta.icon}</span>
+            <span style={{ fontSize:14, fontWeight:700, color:'var(--text-primary)', letterSpacing:'-0.2px' }}>{meta.label}</span>
           </div>
         ) : isProject ? (
-          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-            <Layers size={15} color="var(--accent)" strokeWidth={2} style={{ opacity:0.9 }} />
-            <span style={{ fontSize:14, color:'var(--text-muted)', fontWeight:500 }}>Projects</span>
-            <ChevronRight size={13} color="var(--text-dim)" />
-            <span style={{ fontSize:15, fontWeight:700, color:'var(--text-primary)', letterSpacing:'-0.2px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:4, lineHeight:1 }}>
+            <Layers size={13} color="var(--text-dim)" strokeWidth={2} style={{ flexShrink:0, display:'block' }} />
+            <span style={{ fontSize:13, color:'var(--text-dim)', fontWeight:500, lineHeight:1 }}>Projects</span>
+            <ChevronRight size={13} color="var(--border-strong)" strokeWidth={2.5} style={{ flexShrink:0, display:'block' }} />
+            <span style={{ fontSize:13, fontWeight:700, color:'var(--text-primary)', lineHeight:1, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
               {projectName ?? '…'}
             </span>
-            {isScript && (
+            {isScript && scriptName && (
               <>
-                <ChevronRight size={13} color="var(--text-dim)" />
-                <span style={{ fontSize:13, color:'var(--text-secondary)', fontWeight:500 }}>{scriptName ?? 'Script'}</span>
+                <ChevronRight size={13} color="var(--border-strong)" strokeWidth={2.5} style={{ flexShrink:0, display:'block' }} />
+                <span style={{ fontSize:13, fontWeight:600, color:'var(--accent)', lineHeight:1, maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{scriptName}</span>
               </>
             )}
           </div>
         ) : (
-          <span style={{ fontSize:15, fontWeight:700, color:'var(--text-primary)' }}>Testra</span>
+          <span style={{ fontSize:14, fontWeight:700, color:'var(--text-primary)' }}>Testra</span>
         )}
       </div>
 
@@ -112,30 +133,25 @@ export function TopnavContent() {
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme()
-  const [hov, setHov] = useState(false)
 
   return (
     <button
       onClick={toggle}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
+      title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
       style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '7px 18px',
-        background: hov
-          ? 'linear-gradient(135deg,#0ea5e9 0%,#6366f1 50%,#8b5cf6 100%)'
-          : 'var(--bg-elevated)',
-        border: hov ? '1px solid transparent' : '1px solid var(--border-strong)',
-        borderRadius: 24,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: 34, height: 34,
+        background: 'var(--bg-elevated)',
+        border: '1px solid var(--border-strong)',
+        borderRadius: 9,
         cursor: 'pointer',
-        fontSize: 13, fontWeight: 600,
-        color: hov ? '#fff' : 'var(--text-secondary)',
-        transition: 'all 0.2s',
-        boxShadow: hov ? '0 4px 18px rgba(99,102,241,0.50)' : 'none',
-        letterSpacing: '0.01em',
-      }}>
-      <span style={{ fontSize: 15, lineHeight: 1 }}>{theme === 'dark' ? '☀' : '☽'}</span>
-      {theme === 'dark' ? 'Light' : 'Dark'}
+        fontSize: 16, lineHeight: 1,
+        color: 'var(--text-secondary)',
+        transition: 'all 0.15s',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-depth)'; e.currentTarget.style.borderColor = 'var(--border-accent)'; e.currentTarget.style.color = 'var(--text-primary)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; e.currentTarget.style.borderColor = 'var(--border-strong)'; e.currentTarget.style.color = 'var(--text-secondary)' }}>
+      {theme === 'dark' ? '☀' : '☽'}
     </button>
   )
 }

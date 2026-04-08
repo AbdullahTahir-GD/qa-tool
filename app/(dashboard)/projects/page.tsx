@@ -8,8 +8,10 @@ export default function ProjectsPage() {
   const router = useRouter()
 
   useEffect(() => {
-    const p = getProjects()
-    setProjects(p)
+    const refresh = () => setProjects(getProjects())
+    refresh()
+    window.addEventListener('qaflow:change', refresh)
+    return () => window.removeEventListener('qaflow:change', refresh)
   }, [])
 
   if (projects.length === 0) {

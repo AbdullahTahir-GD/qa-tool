@@ -495,8 +495,8 @@ export default function ScriptPage() {
 
     const caseRowsOnly = rows.filter(r => r.type === 'case')
     const numCol = 28
-    const runColW = Math.min(60, Math.floor((tW - numCol - 200) / Math.max(runs.length, 1)))
-    const titleColW = tW - numCol - runColW * runs.length
+    const titleColW = Math.max(150, Math.min(250, tW - numCol - 55 * runs.length))
+    const runColW = Math.floor((tW - numCol - titleColW) / Math.max(runs.length, 1))
 
     // Header row — green
     doc.setFillColor(22, 163, 74)
@@ -520,28 +520,39 @@ export default function ScriptPage() {
     y += 24
 
     caseRowsOnly.forEach((row, idx) => {
-      if (y > pageH - 50) {
+      doc.setFontSize(8.5)
+      const title = row.number ? `${row.number}: ${row.title}` : row.title
+      const titleLines: string[] = doc.splitTextToSize(title, titleColW - 12)
+      const lineH = 13
+      const rowH = Math.max(20, titleLines.length * lineH + 6)
+
+      // Page break check with actual row height
+      if (y + rowH > pageH - 50) {
         addFooter(doc.getNumberOfPages(), doc.getNumberOfPages() + 1)
         doc.addPage()
         y = margin
       }
+
       const bg: [number, number, number] = idx % 2 === 0 ? [255, 255, 255] : [248, 250, 253]
       doc.setFillColor(...bg)
-      doc.rect(margin, y, tW, 20, 'F')
-      // Subtle borders
+      doc.rect(margin, y, tW, rowH, 'F')
       doc.setDrawColor(235, 238, 242)
-      doc.line(margin, y + 20, margin + tW, y + 20)
+      doc.line(margin, y + rowH, margin + tW, y + rowH)
 
+      // Row number — vertically centred
       doc.setTextColor(160, 168, 180)
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(7.5)
-      doc.text(String(idx + 1), margin + 6, y + 14)
+      doc.text(String(idx + 1), margin + 6, y + rowH / 2 + 2.5)
 
+      // Full title — all lines
       doc.setTextColor(40, 45, 60)
       doc.setFontSize(8.5)
-      const title = row.number ? `${row.number}: ${row.title}` : row.title
-      doc.text(doc.splitTextToSize(title, titleColW - 12)[0], margin + numCol + 6, y + 14)
+      titleLines.forEach((line: string, li: number) => {
+        doc.text(line, margin + numCol + 6, y + 12 + li * lineH)
+      })
 
+      // Status badges — vertically centred in the row
       runs.forEach((run, i) => {
         const res = resultsMap[run.id]?.[row.id]
         const status = res?.status || 'not_run'
@@ -549,9 +560,9 @@ export default function ScriptPage() {
         doc.setTextColor(...sCol[status])
         doc.setFont('helvetica', 'bold')
         doc.setFontSize(7.5)
-        doc.text(sLabel[status], cx, y + 14, { align: 'center' })
+        doc.text(sLabel[status], cx, y + rowH / 2 + 2.5, { align: 'center' })
       })
-      y += 20
+      y += rowH
     })
 
     // ── FOOTER all pages ──
@@ -642,21 +653,34 @@ export default function ScriptPage() {
           )}
           <button onClick={() => setAddingRun(true)}
             style={{
-              display:'flex', alignItems:'center', gap:6,
-              padding:'6px 16px',
-              background:'linear-gradient(135deg,#16a34a 0%,#15803d 100%)',
-              color:'white', border:'none', borderRadius:8,
+              display:'flex', alignItems:'center', gap:7,
+              padding:'7px 18px',
+              background:'linear-gradient(135deg,#22c55e 0%,#16a34a 50%,#15803d 100%)',
+              color:'white', border:'1px solid rgba(255,255,255,0.18)',
+              borderRadius:10,
               fontSize:13, fontWeight:700, cursor:'pointer',
-              boxShadow:'0 3px 12px rgba(22,163,74,0.40)', transition:'all 0.15s',
+              letterSpacing:'0.01em',
+              boxShadow:'0 4px 16px rgba(22,163,74,0.45), inset 0 1px 0 rgba(255,255,255,0.22)',
+              transition:'all 0.18s',
+              position:'relative', overflow:'hidden',
             }}
-            onMouseEnter={e => { e.currentTarget.style.boxShadow='0 4px 18px rgba(22,163,74,0.55)'; e.currentTarget.style.transform='translateY(-1px)' }}
-            onMouseLeave={e => { e.currentTarget.style.boxShadow='0 3px 12px rgba(22,163,74,0.40)'; e.currentTarget.style.transform='none' }}>
-            ▶ New Run
+            onMouseEnter={e => {
+              e.currentTarget.style.boxShadow='0 6px 24px rgba(22,163,74,0.65), inset 0 1px 0 rgba(255,255,255,0.22)'
+              e.currentTarget.style.transform='translateY(-1px)'
+              e.currentTarget.style.background='linear-gradient(135deg,#4ade80 0%,#22c55e 50%,#16a34a 100%)'
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.boxShadow='0 4px 16px rgba(22,163,74,0.45), inset 0 1px 0 rgba(255,255,255,0.22)'
+              e.currentTarget.style.transform='none'
+              e.currentTarget.style.background='linear-gradient(135deg,#22c55e 0%,#16a34a 50%,#15803d 100%)'
+            }}>
+            <span style={{ fontSize:11, opacity:0.9 }}>▶</span>
+            <span>New Run</span>
           </button>
         </div>
 
-        {/* Run column headers */}
-        <div style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)' }}>
+        {/* Run column headers — only shown when runs exist */}
+        {runs.length > 0 && <div style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)' }}>
           <div style={{ flex: 1, minWidth: 0 }} />
 
           {/* Run columns */}
@@ -728,10 +752,10 @@ export default function ScriptPage() {
                 title="Add test run">+</button>
             </div>
           </div>
-        </div>
+        </div>}
 
         {/* ── Rows ── */}
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div style={{ flex: 1, overflowY: 'auto' }} onClick={() => { setActiveRowId(null) }}>
 
           {/* Hint when no runs */}
           {runs.length === 0 && (
@@ -748,28 +772,28 @@ export default function ScriptPage() {
             return (
               <div key={row.id}
                 onContextMenu={e => handleRowCtx(e, row.id)}
-                onClick={() => { if (!isHeading) { if (activeRunId) handleCellClick(activeRunId, row.id); else setActiveRowId(row.id) } }}
+                onClick={e => { e.stopPropagation(); if (!isHeading) { if (activeRunId) handleCellClick(activeRunId, row.id); else setActiveRowId(row.id) } }}
                 style={{
-                  display: 'flex', alignItems: 'center',
+                  display: 'flex', alignItems: 'flex-start',
                   borderBottom: '1px solid var(--border)',
                   minHeight: isHeading ? 44 : 40,
                   cursor: isHeading ? 'default' : 'pointer',
                   background: isHeading
-                    ? 'var(--bg-elevated)'
-                    : isActiveRow ? 'rgba(99,102,241,0.18)' : 'transparent',
-                  borderLeft: !isHeading && isActiveRow ? '3px solid var(--accent)' : '3px solid transparent',
-                  transition: 'background 0.1s, border-color 0.1s',
+                    ? 'linear-gradient(90deg, rgba(99,102,241,0.13) 0%, rgba(99,102,241,0.04) 100%)'
+                    : isActiveRow ? 'rgba(99,102,241,0.10)' : 'transparent',
+                  borderLeft: isHeading ? '3px solid var(--accent)' : isActiveRow ? '3px solid var(--accent)' : '3px solid transparent',
+                  transition: 'background 0.12s, border-color 0.12s',
                 }}
-                onMouseEnter={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'var(--bg-hover)' }}
-                onMouseLeave={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'transparent'; else if (isActiveRow) e.currentTarget.style.background = 'rgba(99,102,241,0.18)' }}>
+                onMouseEnter={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'rgba(99,102,241,0.05)' }}
+                onMouseLeave={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'transparent'; else if (isActiveRow) e.currentTarget.style.background = 'rgba(99,102,241,0.10)' }}>
 
                 {/* Row number */}
-                <div style={{ width: 58, padding: '0 10px 0 16px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
+                <div style={{ width: 58, padding: '10px 10px 10px 16px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
                   {num}
                 </div>
 
                 {/* Test case icon — left click opens menu */}
-                <div style={{ width: 26, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 26, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 11 }}>
                   {!isHeading && (
                     <div
                       onClick={e => { e.stopPropagation(); const x=Math.min(e.clientX,window.innerWidth-200-8); const y=Math.min(e.clientY,window.innerHeight-200-8); setRowMenu({ x, y, rowId: row.id }) }}
@@ -783,7 +807,7 @@ export default function ScriptPage() {
                 </div>
 
                 {/* Title + detail trigger */}
-                <div style={{ flex: 1, padding: '0 14px', minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ flex: 1, padding: '10px 14px 10px', minWidth: 0, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                   {editingRowId === row.id ? (
                     <input autoFocus value={editTitle}
                       onChange={e => setEditTitle(e.target.value)}
@@ -808,14 +832,15 @@ export default function ScriptPage() {
                       <span
                         onDoubleClick={() => startEditingRow(row.id, row.title)}
                         style={{
-                          fontSize: isHeading ? 14 : 14,
+                          fontSize: isHeading ? 15 : 14,
                           fontWeight: isHeading ? 700 : 400,
-                          color: isHeading ? 'var(--text-primary)' : 'var(--text-body)',
-                          flex: 1, lineHeight: 1.5,
-                          letterSpacing: isHeading ? '0.01em' : 'normal',
-                          minHeight: 22,
-                          display: 'flex',
-                          alignItems: 'center',
+                          color: isHeading ? 'var(--accent-hover)' : 'var(--text-body)',
+                          flex: 1, lineHeight: 1.55,
+                          letterSpacing: isHeading ? '0.04em' : 'normal',
+                          textTransform: isHeading ? 'uppercase' : 'none',
+                          wordBreak: 'break-word',
+                          overflowWrap: 'anywhere',
+                          whiteSpace: 'normal',
                         }}>
                         {row.title
                           ? (isHeading ? row.title : (row.number ? `${row.number}: ${row.title}` : row.title))
@@ -843,7 +868,7 @@ export default function ScriptPage() {
                 {/* Result cells per run */}
                 {runs.map(run => {
                   if (isHeading) {
-                    return <div key={run.id} style={{ width: 136, height: 44, borderLeft: '1px solid var(--border-subtle)', flexShrink: 0, background: 'var(--bg-elevated)' }} />
+                    return <div key={run.id} style={{ width: 136, alignSelf: 'stretch', borderLeft: '1px solid var(--border-subtle)', flexShrink: 0, background: 'linear-gradient(90deg,rgba(99,102,241,0.06) 0%,transparent 100%)' }} />
                   }
                   const res = resultsMap[run.id]?.[row.id]
                   const st = res?.status && res.status !== 'not_run' ? STATUS_ICONS[res.status] : null
@@ -852,7 +877,7 @@ export default function ScriptPage() {
                     <div key={run.id}
                       onClick={e => { e.stopPropagation(); handleCellClick(run.id, row.id) }}
                       style={{
-                        width: 136, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        width: 136, alignSelf: 'stretch', display: 'flex', alignItems: 'center', justifyContent: 'center',
                         borderLeft: '1px solid var(--border-subtle)', cursor: 'pointer', flexShrink: 0,
                         background: isCellActive ? 'var(--accent-muted)' : activeRunId === run.id ? 'var(--accent-subtle)' : 'transparent',
                         transition: 'background 0.1s',
@@ -1060,6 +1085,19 @@ export default function ScriptPage() {
                       </button>
                     ))}
                   </div>
+                  <div style={{ marginBottom:8 }}>
+                    <button
+                      onClick={() => {
+                        if (!activeRunId || !activeRowId) return
+                        setResult(activeRunId, activeRowId, 'not_run', panelComment, panelBugId)
+                        reload()
+                      }}
+                      style={{ width:'100%', padding:'8px', background:'var(--bg-depth)', color:'#ef4444', border:'1px solid rgba(239,68,68,0.3)', borderRadius:7, fontSize:11, fontWeight:700, cursor:'pointer', letterSpacing:'0.04em', transition:'all 0.13s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.08)'; e.currentTarget.style.borderColor='rgba(239,68,68,0.6)' }}
+                      onMouseLeave={e => { e.currentTarget.style.background='var(--bg-depth)'; e.currentTarget.style.borderColor='rgba(239,68,68,0.3)' }}>
+                      ✕ CLEAR RESULT
+                    </button>
+                  </div>
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
                     <button onClick={() => handlePanelNav('prev')}
                       style={{ padding:'9px', background:'var(--bg-depth)', color:'var(--text-secondary)', border:'1px solid var(--border-mid)', borderRadius:7, fontSize:12, fontWeight:700, cursor:'pointer', transition:'all 0.13s' }}
@@ -1085,39 +1123,43 @@ export default function ScriptPage() {
       {detailRowId && (() => {
         const detailRow = rows.find(r => r.id === detailRowId)
         const fields: { key: keyof TestCaseDetail; label: string; rows: number; placeholder: string }[] = [
-          { key: 'preConditions', label: 'Pre-Conditions',  rows: 3, placeholder: 'e.g. User must be logged in, feature flag enabled...' },
-          { key: 'steps',         label: 'Test Steps',      rows: 5, placeholder: 'e.g. 1. Navigate to...\n2. Click...\n3. Verify...' },
-          { key: 'expected',      label: 'Expected Result', rows: 3, placeholder: 'e.g. The page should show a success message...' },
-          { key: 'actual',        label: 'Actual Result',   rows: 3, placeholder: 'e.g. The page shows an error instead...' },
-          { key: 'notes',         label: 'Notes',           rows: 2, placeholder: 'e.g. Only reproducible on Safari...' },
+          { key: 'preConditions', label: 'Pre-Conditions',  rows: 2, placeholder: 'e.g. User must be logged in...' },
+          { key: 'steps',         label: 'Test Steps',      rows: 3, placeholder: 'e.g. 1. Navigate to...\n2. Click...\n3. Verify...' },
+          { key: 'expected',      label: 'Expected Result', rows: 2, placeholder: 'e.g. Success message shown...' },
+          { key: 'actual',        label: 'Actual Result',   rows: 2, placeholder: 'e.g. Error shown instead...' },
+          { key: 'notes',         label: 'Notes',           rows: 1, placeholder: 'e.g. Only on Safari...' },
         ]
         return (
           <>
           {/* Backdrop */}
           <div onClick={closeDetail} style={{ position: 'fixed', inset: 0, zIndex: 90 }} />
           <div style={{
-            position: 'fixed', top: 'var(--topnav-height)', right: panelOpen ? 365 : 0,
-            width: 340, height: 'calc(100vh - var(--topnav-height))',
-            borderLeft: '1px solid var(--border-mid)',
-            background: 'var(--bg-base-alt)',
+            position: 'fixed',
+            top: 'calc(var(--topnav-height) + 60px)',
+            right: panelOpen ? 370 : 16,
+            width: 320,
+            maxHeight: 'calc(100vh - var(--topnav-height) - 80px)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 12,
+            background: 'var(--bg-surface)',
             display: 'flex', flexDirection: 'column',
             zIndex: 110,
-            boxShadow: '-4px 0 24px rgba(0,0,0,0.25)',
+            boxShadow: '0 8px 40px rgba(0,0,0,0.30)',
             overflow: 'hidden',
             transition: 'right 0.2s ease',
           }}>
             {/* Header */}
-            <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, flexShrink: 0, background: 'var(--bg-surface)' }}>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexShrink: 0, background: 'var(--bg-surface)' }}>
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>
+                <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 3 }}>
                   Test Case Details
                 </div>
-                <p style={{ fontSize: 13, color: 'var(--text-body)', margin: 0, lineHeight: 1.5, wordBreak: 'break-word' }}>
+                <p style={{ fontSize: 12.5, color: 'var(--text-body)', margin: 0, lineHeight: 1.4, wordBreak: 'break-word', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
                   {detailRow?.number ? <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{detailRow.number}: </span> : ''}{detailRow?.title}
                 </p>
               </div>
               <button onClick={closeDetail}
-                style={{ background: 'var(--bg-depth)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 14, padding: '4px 9px', flexShrink: 0, lineHeight: 1.4, fontWeight: 600 }}
+                style={{ background: 'var(--bg-depth)', border: '1px solid var(--border-strong)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 13, padding: '3px 8px', flexShrink: 0, lineHeight: 1.4, fontWeight: 600 }}
                 onMouseEnter={e => { e.currentTarget.style.background = '#ef4444'; e.currentTarget.style.color = 'white'; e.currentTarget.style.borderColor = '#ef4444' }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-depth)'; e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'var(--border-strong)' }}>
                 ✕
@@ -1125,10 +1167,10 @@ export default function ScriptPage() {
             </div>
 
             {/* Fields */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
               {fields.map(({ key, label, rows: numRows, placeholder }) => (
                 <div key={key}>
-                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 5 }}>
+                  <label style={{ display: 'block', fontSize: 9.5, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 3 }}>
                     {label}
                   </label>
                   <textarea
@@ -1137,13 +1179,13 @@ export default function ScriptPage() {
                     placeholder={placeholder}
                     rows={numRows}
                     style={{
-                      width: '100%', padding: '8px 10px',
+                      width: '100%', padding: '6px 9px',
                       background: 'var(--bg-surface)',
                       border: '1px solid var(--border)',
-                      borderRadius: 7,
+                      borderRadius: 6,
                       fontSize: 12, color: 'var(--text-body)',
                       resize: 'vertical', outline: 'none',
-                      fontFamily: 'inherit', lineHeight: 1.55,
+                      fontFamily: 'inherit', lineHeight: 1.5,
                       boxSizing: 'border-box',
                       transition: 'border-color 0.15s',
                     }}
@@ -1154,8 +1196,8 @@ export default function ScriptPage() {
               ))}
             </div>
 
-            {/* Footer hint */}
-            <div style={{ padding: '8px 14px', borderTop: '1px solid var(--border-subtle)', fontSize: 10, color: 'var(--text-dimmer)', display: 'flex', justifyContent: 'space-between' }}>
+            {/* Footer */}
+            <div style={{ padding: '6px 12px', borderTop: '1px solid var(--border-subtle)', fontSize: 10, color: 'var(--text-dimmer)', display: 'flex', justifyContent: 'space-between' }}>
               <span>auto-saved</span>
               <span>Esc to close</span>
             </div>

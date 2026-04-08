@@ -157,6 +157,7 @@ export function SidebarContent() {
                 userSelect: 'none',
                 transition: 'all 0.14s',
                 lineHeight: 1.45,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}
               onMouseEnter={e => {
                 if (!isActive) {
@@ -170,6 +171,7 @@ export function SidebarContent() {
                   e.currentTarget.style.color = 'rgba(255,255,255,0.58)'
                 }
               }}
+              title={p.name}
             >
               {p.name}
             </div>
