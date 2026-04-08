@@ -105,17 +105,17 @@ export function TopnavContent() {
             <span style={{ fontSize:14, fontWeight:700, color:'var(--text-primary)', letterSpacing:'-0.2px' }}>{meta.label}</span>
           </div>
         ) : isProject ? (
-          <div style={{ display:'flex', alignItems:'center', gap:4, lineHeight:1 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:4 }}>
             <Layers size={13} color="var(--text-dim)" strokeWidth={2} style={{ flexShrink:0, display:'block' }} />
-            <span style={{ fontSize:13, color:'var(--text-dim)', fontWeight:500, lineHeight:1 }}>Projects</span>
+            <span style={{ fontSize:13, color:'var(--text-dim)', fontWeight:500, lineHeight:1.5 }}>Projects</span>
             <ChevronRight size={13} color="var(--border-strong)" strokeWidth={2.5} style={{ flexShrink:0, display:'block' }} />
-            <span style={{ fontSize:13, fontWeight:700, color:'var(--text-primary)', lineHeight:1, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+            <span style={{ fontSize:13, fontWeight:700, color:'var(--text-primary)', lineHeight:1.5, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
               {projectName ?? '…'}
             </span>
             {isScript && scriptName && (
               <>
                 <ChevronRight size={13} color="var(--border-strong)" strokeWidth={2.5} style={{ flexShrink:0, display:'block' }} />
-                <span style={{ fontSize:13, fontWeight:600, color:'var(--accent)', lineHeight:1, maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{scriptName}</span>
+                <span style={{ fontSize:13, fontWeight:600, color:'var(--accent)', lineHeight:1.5, maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{scriptName}</span>
               </>
             )}
           </div>

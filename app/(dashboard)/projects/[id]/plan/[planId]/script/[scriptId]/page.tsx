@@ -681,6 +681,9 @@ export default function ScriptPage() {
 
         {/* Run column headers — only shown when runs exist */}
         {runs.length > 0 && <div style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)' }}>
+          {/* Spacer must match test-case row left section exactly: 58px (num) + 26px (icon) + flex:1 (title) */}
+          <div style={{ width: 58, flexShrink: 0 }} />
+          <div style={{ width: 26, flexShrink: 0 }} />
           <div style={{ flex: 1, minWidth: 0 }} />
 
           {/* Run columns */}
@@ -692,10 +695,11 @@ export default function ScriptPage() {
                 <div key={run.id}
                   onClick={() => handleSelectRun(run.id)}
                   style={{
-                    width: 136, padding: '8px 10px', borderLeft: '1px solid var(--border)',
+                    width: 136, padding: '8px 10px',
+                    borderLeft: isActive ? '3px solid var(--accent)' : '3px solid var(--border)',
+                    borderTop: 'none',
                     cursor: 'pointer', userSelect: 'none',
                     background: isActive ? 'var(--accent-muted)' : 'transparent',
-                    borderTop: isActive ? '3px solid var(--accent)' : '3px solid transparent',
                     transition: 'all 0.15s', display: 'flex', flexDirection: 'column', gap: 5,
                   }}
                   onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)' }}
@@ -878,7 +882,8 @@ export default function ScriptPage() {
                       onClick={e => { e.stopPropagation(); handleCellClick(run.id, row.id) }}
                       style={{
                         width: 136, alignSelf: 'stretch', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        borderLeft: '1px solid var(--border-subtle)', cursor: 'pointer', flexShrink: 0,
+                        borderLeft: '1px solid var(--border-subtle)',
+                        cursor: 'pointer', flexShrink: 0,
                         background: isCellActive ? 'var(--accent-muted)' : activeRunId === run.id ? 'var(--accent-subtle)' : 'transparent',
                         transition: 'background 0.1s',
                       }}
