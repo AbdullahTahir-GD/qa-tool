@@ -14,7 +14,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Runs BEFORE first paint — no flash, no refresh needed */}
         <script dangerouslySetInnerHTML={{ __html: `
           try {
-            if (localStorage.getItem('qf_theme') === 'light') {
+            var t = localStorage.getItem('qf_theme');
+            if (t === 'light' || t === null) {
               document.documentElement.classList.add('qf-light');
             }
           } catch {}

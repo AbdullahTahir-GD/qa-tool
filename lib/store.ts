@@ -37,6 +37,9 @@ function save(key: string, v: unknown) {
 // Projects
 export const getProjects = (): Project[] => load('qf_projects', [])
 export const saveProject = (name: string): Project => {
+  // Guard: return existing if same name was just created within 3 seconds (prevents rapid double-submit)
+  const recent = getProjects().find(p => p.name === name && Date.now() - new Date(p.createdAt).getTime() < 3000)
+  if (recent) return recent
   const p: Project = { id: uid(), name, createdAt: new Date().toISOString() }
   save('qf_projects', [...getProjects(), p]); return p
 }

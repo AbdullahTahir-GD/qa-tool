@@ -1,5 +1,8 @@
 'use client'
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useLayoutEffect, useState } from 'react'
+
+// useLayoutEffect fires before browser paint (no flash); falls back to useEffect on SSR
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect
 
 type Theme = 'dark' | 'light'
 interface ThemeCtx { theme: Theme; toggle: () => void }
@@ -7,9 +10,7 @@ const ThemeContext = createContext<ThemeCtx>({ theme: 'light', toggle: () => {} 
 
 function applyTheme(t: Theme) {
   const el = document.documentElement
-  // Remove ALL inline style overrides first (kills any old inline vars)
   el.removeAttribute('style')
-  // Then set theme purely via CSS class
   if (t === 'light') {
     el.classList.add('qf-light')
   } else {
@@ -20,7 +21,7 @@ function applyTheme(t: Theme) {
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>('light')
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     const stored = (localStorage.getItem('qf_theme') ?? 'light') as Theme
     setTheme(stored)
     applyTheme(stored)

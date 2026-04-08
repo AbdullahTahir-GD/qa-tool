@@ -1,15 +1,28 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { saveProject, savePlan } from '@/lib/store'
 
+// Module-level lock — immune to React re-renders and Strict Mode
+let _submitting = false
+
 export default function NewProjectPage() {
   const [name, setName] = useState('')
+  const [creating, setCreating] = useState(false)
   const router = useRouter()
 
-  const handleCreateProject = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!name.trim()) return
+  // Reset lock each time the page mounts (so returning here works normally)
+  useEffect(() => {
+    _submitting = false
+    setCreating(false)
+  }, [])
+
+  const canCreate = name.trim().length > 0
+
+  const handleCreate = () => {
+    if (!canCreate || _submitting) return
+    _submitting = true
+    setCreating(true)
     const p = saveProject(name.trim())
     const plan = savePlan(p.id, name.trim() + ' - Test Plan')
     router.push(`/projects/${p.id}/plan/${plan.id}`)
@@ -23,6 +36,8 @@ export default function NewProjectPage() {
     color: 'var(--text-primary)',
     outline: 'none', boxSizing: 'border-box', marginBottom: 24,
   }
+
+  const btnDisabled = !canCreate || creating
 
   return (
     <div style={{
@@ -49,25 +64,44 @@ export default function NewProjectPage() {
         </div>
 
         <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-strong)', borderRadius: 18, padding: '44px 44px 40px', boxShadow: '0 12px 48px rgba(0,0,0,0.2)' }}>
-
           <h2 style={{ fontSize: 30, fontWeight: 800, color: 'var(--text-primary)', margin: '0 0 10px', letterSpacing: '-0.6px' }}>New Project</h2>
           <p style={{ fontSize: 15, color: 'var(--text-muted)', margin: '0 0 32px', lineHeight: 1.6 }}>Give your project a name to get started</p>
-          <form onSubmit={handleCreateProject}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Project Name</label>
-            <input autoFocus value={name} onChange={e => setName(e.target.value)}
-              placeholder="e.g. MSS - Build Test Plan" style={inputStyle} />
-            <div style={{ display: 'flex', gap: 12 }}>
-              <button type="button" onClick={() => router.back()}
-                style={{ flex: 1, padding: '14px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-strong)', borderRadius: 11, fontSize: 15, cursor: 'pointer', fontWeight: 500 }}>
-                Cancel
-              </button>
-              <button type="submit"
-                style={{ flex: 2, padding: '14px', background: 'linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%)', color: 'white', border: 'none', borderRadius: 11, fontSize: 15, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.01em' }}>
-                Create Project →
-              </button>
-            </div>
-          </form>
 
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Project Name</label>
+          <input
+            autoFocus
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleCreate() } }}
+            placeholder="e.g. MSS - Build Test Plan"
+            style={inputStyle}
+          />
+
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button
+              type="button"
+              onClick={() => { _submitting = false; router.back() }}
+              style={{ flex: 1, padding: '14px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-strong)', borderRadius: 11, fontSize: 15, cursor: 'pointer', fontWeight: 500 }}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleCreate}
+              disabled={btnDisabled}
+              style={{
+                flex: 2, padding: '14px', borderRadius: 11, fontSize: 15, fontWeight: 700,
+                letterSpacing: '0.01em', border: 'none', transition: 'all 0.15s',
+                background: btnDisabled
+                  ? 'var(--border-strong)'
+                  : 'linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%)',
+                color: btnDisabled ? 'var(--text-dim)' : 'white',
+                cursor: btnDisabled ? 'not-allowed' : 'pointer',
+                opacity: btnDisabled ? 0.55 : 1,
+                pointerEvents: btnDisabled ? 'none' : 'auto',
+              }}>
+              {creating ? 'Creating…' : 'Create Project →'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
