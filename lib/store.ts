@@ -117,6 +117,32 @@ export const saveRow = (scriptId: string, title: string, number: string, type: '
   const r: TestRow = { id: uid(), scriptId, order: rows.length, type, number, title }
   save('qf_rows_' + scriptId, [...rows, r]); return r
 }
+export const insertRowBefore = (
+  scriptId: string,
+  beforeRowId: string,
+  type: 'case' | 'heading' = 'case',
+): TestRow => {
+  const rows = getRows(scriptId)
+  const beforeRow = rows.find(r => r.id === beforeRowId)
+  if (!beforeRow) return saveRow(scriptId, '', '', type)
+
+  const inserted: TestRow = {
+    id: uid(),
+    scriptId,
+    order: beforeRow.order,
+    type,
+    number: '',
+    title: '',
+  }
+
+  const nextRows = rows
+    .map(r => (r.order >= beforeRow.order ? { ...r, order: r.order + 1 } : r))
+    .concat(inserted)
+    .sort((a, b) => a.order - b.order)
+
+  save('qf_rows_' + scriptId, nextRows)
+  return inserted
+}
 export const updateRow = (scriptId: string, id: string, upd: Partial<TestRow>) =>
   save('qf_rows_' + scriptId, getRows(scriptId).map(r => r.id === id ? { ...r, ...upd } : r))
 export const deleteRow = (scriptId: string, id: string) =>
@@ -132,7 +158,7 @@ export const saveTestRun = (planId: string, tester: string, build: string): Test
   const r: TestRun = {
     id: uid(), planId, number: runs.length + 1, tester, build,
     date: now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-    time: now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
     status: 'in_progress',
   }
   save('qf_runs_' + planId, [...runs, r]); return r
@@ -188,4 +214,29 @@ export function getFolderStats(planId: string, folderId: string, runId: string) 
   scripts.forEach(s => { const st = getScriptStats(s.id, runId); pass+=st.pass; fail+=st.fail; blocked+=st.blocked; query+=st.query; done+=st.done; total+=st.total })
   const pct = total > 0 ? Math.round((pass/total)*100) : 0
   return { pass, fail, blocked, query, done, total, pct }
+}
+
+// All-runs stats: sum of results across every run (total executions)
+export function getScriptStatsAllRuns(planId: string, scriptId: string) {
+  const runs = getTestRuns(planId)
+  if (runs.length === 0) {
+    const rows = getRows(scriptId).filter(r => r.type === 'case')
+    return { pass:0, fail:0, blocked:0, query:0, exclude:0, done:0, total:rows.length, pct:0 }
+  }
+  let pass=0, fail=0, blocked=0, query=0, exclude=0, done=0, total=0
+  runs.forEach(run => {
+    const st = getScriptStats(scriptId, run.id)
+    pass+=st.pass; fail+=st.fail; blocked+=st.blocked; query+=st.query
+    exclude+=st.exclude; done+=st.done; total+=st.total
+  })
+  const pct = total > 0 ? Math.round((pass/total)*100) : 0
+  return { pass, fail, blocked, query, exclude, done, total, pct }
+}
+
+export function getFolderStatsAllRuns(planId: string, folderId: string) {
+  const scripts = getScripts(planId).filter(s => s.folderId === folderId)
+  let pass=0,fail=0,blocked=0,query=0,done=0,total=0
+  scripts.forEach(s => { const st = getScriptStatsAllRuns(planId, s.id); pass+=st.pass; fail+=st.fail; blocked+=st.blocked; query+=st.query; done+=st.done; total+=st.total })
+  const pct = total > 0 ? Math.round((pass/total)*100) : 0
+  return { pass,fail,blocked,query,done,total,pct }
 }

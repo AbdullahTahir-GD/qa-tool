@@ -4,9 +4,9 @@ import { createPortal } from 'react-dom'
 import { useParams, useRouter } from 'next/navigation'
 import { FileText } from 'lucide-react'
 import {
-  getScripts, getRows, saveRow, updateRow, deleteRow,
+  getScripts, getRows, saveRow, insertRowBefore, updateRow, deleteRow,
   getTestRuns, saveTestRun, deleteTestRun, updateTestRun,
-  getResult, setResult, getResults, getScriptStats,
+  getResult, setResult, getResults, getScriptStats, getScriptStatsAllRuns,
   getDetail, saveDetail,
   type Script, type TestRow, type TestRun, type TestStatus, type TestResult, type TestCaseDetail
 } from '@/lib/store'
@@ -83,9 +83,36 @@ export default function ScriptPage() {
     return () => document.removeEventListener('mousedown', close)
   }, [])
 
+  // Global Shift+Enter: insert blank row above selected row (when not already editing)
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && e.shiftKey && activeRowId && !editingRowId) {
+        // Make sure we're not inside an input/textarea
+        const tag = (e.target as HTMLElement).tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return
+        e.preventDefault()
+        insertBlankRowAbove(activeRowId)
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [activeRowId, editingRowId])
+
   const caseRows = rows.filter(r => r.type === 'case')
 
   const topStats = activeRunId ? getScriptStats(scriptId, activeRunId) : null
+  const allRunsStats = runs.length > 0 ? getScriptStatsAllRuns(planId, scriptId) : null
+
+  const startEditingRow = (rowId: string, title: string) => {
+    setEditingRowId(rowId)
+    setEditTitle(title)
+  }
+
+  const insertBlankRowAbove = (rowId: string) => {
+    const inserted = insertRowBefore(scriptId, rowId, 'case')
+    reload()
+    startEditingRow(inserted.id, '')
+  }
 
   // ── Add row ──
   const handleAddRow = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -256,149 +283,285 @@ export default function ScriptPage() {
     const margin = 40
     let y = margin
 
-    const statusColors: Record<string, [number, number, number]> = {
+    const sCol: Record<string, [number, number, number]> = {
       pass:    [22, 163, 74],
       fail:    [220, 38, 38],
-      blocked: [245, 158, 11],
+      blocked: [217, 119, 6],
       query:   [59, 130, 246],
       exclude: [100, 116, 139],
-      not_run: [150, 150, 150],
+      not_run: [180, 180, 190],
     }
-    const statusLabels: Record<string, string> = {
+    const sLabel: Record<string, string> = {
       pass: 'PASS', fail: 'FAIL', blocked: 'BLOCKED',
-      query: 'QUERY', exclude: 'EXCL', not_run: '-',
+      query: 'QUERY', exclude: 'EXCL', not_run: '—',
     }
 
-    // ── HEADER ──
+    const tW = pageW - margin * 2 // usable table width
+
+    const addFooter = (pageNum: number, total: number) => {
+      doc.setDrawColor(200, 205, 212)
+      doc.line(margin, pageH - 30, pageW - margin, pageH - 30)
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(7)
+      doc.setTextColor(140, 145, 155)
+      doc.text(`Testra  ·  ${script?.name || ''}`, margin, pageH - 18)
+      doc.text(`Page ${pageNum} of ${total}`, pageW - margin, pageH - 18, { align: 'right' })
+    }
+
+    // ── HEADER — clean white with green left accent ──
+    // Top green accent bar
     doc.setFillColor(22, 163, 74)
-    doc.rect(0, 0, pageW, 72, 'F')
-    doc.setTextColor(255, 255, 255)
+    doc.rect(0, 0, pageW, 5, 'F')
+    // White header area
+    doc.setFillColor(255, 255, 255)
+    doc.rect(0, 5, pageW, 70, 'F')
+    // Bottom border
+    doc.setDrawColor(225, 228, 234)
+    doc.line(0, 75, pageW, 75)
+
+    // Logo text
     doc.setFont('helvetica', 'bold')
-    doc.setFontSize(20)
-    doc.text('QAFlow — Combined Test Report', margin, 30)
+    doc.setFontSize(24)
+    doc.setTextColor(22, 163, 74)
+    doc.text('Testra', margin, 36)
+
+    // "Test Report" beside logo
     doc.setFont('helvetica', 'normal')
-    doc.setFontSize(11)
-    doc.text(`Script: ${script?.name || ''}   ·   ${runs.length} Run${runs.length > 1 ? 's' : ''}   ·   Generated: ${new Date().toLocaleString()}`, margin, 54)
+    doc.setFontSize(14)
+    doc.setTextColor(100, 110, 130)
+    doc.text('Test Report', margin + 78, 36)
+
+    // Meta line
+    doc.setFontSize(9)
+    doc.setTextColor(130, 138, 150)
+    const meta = `Script: ${script?.name || ''}   ·   ${runs.length} Run${runs.length > 1 ? 's' : ''}   ·   ${new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' })}  ${new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true })}`
+    doc.text(meta, margin, 55)
     y = 90
 
-    // ── RUNS SUMMARY TABLE ──
-    doc.setTextColor(30, 30, 40)
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(11)
-    doc.text('Runs Summary', margin, y)
-    y += 12
+    // ── OVERALL STATS STRIP ──
+    const allSt = getScriptStatsAllRuns(planId, scriptId)
+    if (allSt.total > 0) {
+      // Green-tinted strip
+      doc.setFillColor(240, 253, 244)
+      doc.roundedRect(margin, y, tW, 40, 4, 4, 'F')
+      doc.setDrawColor(187, 247, 208)
+      doc.roundedRect(margin, y, tW, 40, 4, 4, 'S')
 
-    // Summary table header
-    const summaryColW = (pageW - margin * 2) / 7
-    const summaryHeaders = ['Run', 'Tester', 'Build', 'Date', 'Pass', 'Fail', 'Pass Rate']
-    doc.setFillColor(30, 30, 40)
-    doc.rect(margin, y, pageW - margin * 2, 20, 'F')
-    doc.setTextColor(255, 255, 255)
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(9)
-    summaryHeaders.forEach((h, i) => {
-      doc.text(h, margin + summaryColW * i + 5, y + 14)
-    })
-    y += 20
-
-    // Summary table rows
-    runs.forEach((run, idx) => {
-      const st = getScriptStats(scriptId, run.id)
-      const bg: [number, number, number] = idx % 2 === 0 ? [255, 255, 255] : [248, 250, 252]
-      doc.setFillColor(...bg)
-      doc.rect(margin, y, pageW - margin * 2, 18, 'F')
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(8.5)
-      const cells = [
-        `#${run.number}`, run.tester, run.build || '-', run.date,
-        String(st.pass), String(st.fail), `${st.pct}%`
+      const statItems = [
+        { label: 'TOTAL', value: String(allSt.total), color: [40, 50, 70] as [number,number,number] },
+        { label: 'PASS', value: String(allSt.pass), color: sCol.pass },
+        { label: 'FAIL', value: String(allSt.fail), color: sCol.fail },
+        { label: 'BLOCKED', value: String(allSt.blocked), color: sCol.blocked },
+        { label: 'QUERY', value: String(allSt.query), color: sCol.query },
+        { label: 'PASS RATE', value: `${allSt.pct}%`, color: allSt.pct >= 80 ? sCol.pass : allSt.pct >= 50 ? sCol.blocked : sCol.fail },
       ]
-      cells.forEach((cell, i) => {
-        if (i === 4) doc.setTextColor(...statusColors.pass)
-        else if (i === 5) doc.setTextColor(...statusColors.fail)
-        else if (i === 6) doc.setTextColor(22, 163, 74)
-        else doc.setTextColor(30, 30, 40)
-        doc.text(cell, margin + summaryColW * i + 5, y + 13)
+      const slotW = tW / statItems.length
+      statItems.forEach((s, i) => {
+        const cx = margin + slotW * i + slotW / 2
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(14)
+        doc.setTextColor(...s.color)
+        doc.text(s.value, cx, y + 22, { align: 'center' })
+        doc.setFont('helvetica', 'normal')
+        doc.setFontSize(6.5)
+        doc.setTextColor(100, 116, 139)
+        doc.text(s.label, cx, y + 33, { align: 'center' })
       })
-      y += 18
-    })
-    y += 20
+      y += 52
+    }
 
-    // ── COMBINED TEST CASE TABLE ──
-    doc.setTextColor(30, 30, 40)
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(11)
-    doc.text('Detailed Results — All Runs', margin, y)
-    y += 12
+    // ── SECTION LABEL helper ──
+    const sectionHeader = (label: string) => {
+      // Green left bar + text
+      doc.setFillColor(22, 163, 74)
+      doc.rect(margin, y + 2, 3, 14, 'F')
+      doc.setTextColor(30, 40, 60)
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(11)
+      doc.text(label, margin + 10, y + 13)
+      y += 22
+    }
 
-    // Calculate column widths: # col + title col + one col per run
-    const caseRowsOnly = rows.filter(r => r.type === 'case')
-    const numCol = 28
-    const runColW = 52
-    const titleColW = pageW - margin * 2 - numCol - runColW * runs.length
+    // ── RUNS SUMMARY TABLE ──
+    sectionHeader('Runs Summary')
 
-    // Table header
-    doc.setFillColor(30, 30, 40)
-    doc.rect(margin, y, pageW - margin * 2, 22, 'F')
+    const summaryCols = [30, 110, 140, 38, 38, 46, 46, 67]
+    const summaryHeaders = ['Run', 'Tester', 'Date & Time', 'Pass', 'Fail', 'Blocked', 'Query', 'Pass %']
+    const summaryX = (i: number) => margin + summaryCols.slice(0, i).reduce((a, b) => a + b, 0)
+
+    // Table header — green
+    doc.setFillColor(22, 163, 74)
+    doc.rect(margin, y, tW, 20, 'F')
     doc.setTextColor(255, 255, 255)
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(8)
-    doc.text('#', margin + 4, y + 15)
-    doc.text('Test Case', margin + numCol + 4, y + 15)
+    summaryHeaders.forEach((h, i) => { doc.text(h, summaryX(i) + 5, y + 14) })
+    y += 20
+
+    let totPass = 0, totFail = 0, totBlocked = 0, totQuery = 0
+    runs.forEach((run, idx) => {
+      const st = getScriptStats(scriptId, run.id)
+      totPass += st.pass; totFail += st.fail; totBlocked += st.blocked; totQuery += st.query
+      const bg: [number, number, number] = idx % 2 === 0 ? [255, 255, 255] : [248, 250, 253]
+      doc.setFillColor(...bg)
+      doc.rect(margin, y, tW, 18, 'F')
+      // Left border
+      doc.setDrawColor(225, 228, 234)
+      doc.line(margin, y, margin, y + 18)
+      doc.line(margin + tW, y, margin + tW, y + 18)
+      doc.line(margin, y + 18, margin + tW, y + 18)
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8.5)
+
+      // Mini progress bar under date
+      if (st.total > 0) {
+        const barX = summaryX(2) + 5
+        const barW = summaryCols[2] - 10
+        const barY = y + 15
+        const barH = 2
+        let bx = barX
+        ;[{ v: st.pass, c: sCol.pass }, { v: st.fail, c: sCol.fail }, { v: st.blocked, c: sCol.blocked }, { v: st.query, c: sCol.query }].forEach(seg => {
+          if (seg.v > 0) {
+            const sw = (seg.v / st.total) * barW
+            doc.setFillColor(...seg.c)
+            doc.rect(bx, barY, sw, barH, 'F')
+            bx += sw
+          }
+        })
+      }
+
+      const cells = [
+        `#${run.number}`, run.tester, `${run.date} · ${run.time}`,
+        String(st.pass), String(st.fail), String(st.blocked), String(st.query), `${st.pct}%`
+      ]
+      cells.forEach((cell, i) => {
+        if (i === 3) doc.setTextColor(...sCol.pass)
+        else if (i === 4) doc.setTextColor(...sCol.fail)
+        else if (i === 5) doc.setTextColor(...sCol.blocked)
+        else if (i === 6) doc.setTextColor(...sCol.query)
+        else if (i === 7) { doc.setTextColor(22, 163, 74); doc.setFont('helvetica', 'bold') }
+        else doc.setTextColor(50, 55, 70)
+        doc.text(cell, summaryX(i) + 5, y + 12)
+        if (i === 7) doc.setFont('helvetica', 'normal')
+      })
+      y += 18
+    })
+
+    // Totals row
+    const totDone = totPass + totFail + totBlocked + totQuery
+    const totTotal = allSt.total > 0 ? allSt.total : (totDone || 1)
+    const totPct = totTotal > 0 ? Math.round((totPass / totTotal) * 100) : 0
+    doc.setFillColor(240, 253, 244)
+    doc.rect(margin, y, tW, 18, 'F')
+    doc.setDrawColor(187, 247, 208)
+    doc.line(margin, y + 18, margin + tW, y + 18)
+
+    // Mini progress bar in totals
+    if (totDone > 0) {
+      const barX = summaryX(2) + 5
+      const barW = summaryCols[2] - 10
+      const barY = y + 15
+      const barH = 2
+      let bx = barX
+      ;[{ v: totPass, c: sCol.pass }, { v: totFail, c: sCol.fail }, { v: totBlocked, c: sCol.blocked }, { v: totQuery, c: sCol.query }].forEach(seg => {
+        if (seg.v > 0) {
+          const sw = (seg.v / totDone) * barW
+          doc.setFillColor(...seg.c)
+          doc.rect(bx, barY, sw, barH, 'F')
+          bx += sw
+        }
+      })
+    }
+
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(8.5)
+    doc.setTextColor(30, 40, 60)
+    doc.text('Total', summaryX(1) + 5, y + 12)
+    const totCells = ['', '', '', String(totPass), String(totFail), String(totBlocked), String(totQuery), `${totPct}%`]
+    totCells.forEach((cell, i) => {
+      if (!cell) return
+      if (i === 3) doc.setTextColor(...sCol.pass)
+      else if (i === 4) doc.setTextColor(...sCol.fail)
+      else if (i === 5) doc.setTextColor(...sCol.blocked)
+      else if (i === 6) doc.setTextColor(...sCol.query)
+      else if (i === 7) doc.setTextColor(22, 163, 74)
+      doc.text(cell, summaryX(i) + 5, y + 12)
+    })
+    y += 30
+
+    // ── DETAILED RESULTS TABLE ──
+    if (y > pageH - 120) { doc.addPage(); y = margin }
+    sectionHeader('Detailed Results — All Runs')
+
+    const caseRowsOnly = rows.filter(r => r.type === 'case')
+    const numCol = 28
+    const runColW = Math.min(60, Math.floor((tW - numCol - 200) / Math.max(runs.length, 1)))
+    const titleColW = tW - numCol - runColW * runs.length
+
+    // Header row — green
+    doc.setFillColor(22, 163, 74)
+    doc.rect(margin, y, tW, 24, 'F')
+    doc.setTextColor(255, 255, 255)
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(8)
+    doc.text('#', margin + 6, y + 16)
+    doc.text('Test Case', margin + numCol + 6, y + 16)
     runs.forEach((run, i) => {
       const cx = margin + numCol + titleColW + runColW * i + runColW / 2
-      doc.text(`R${run.number}`, cx, y + 10, { align: 'center' })
+      doc.setFontSize(8)
+      doc.text(`#${run.number}`, cx, y + 10, { align: 'center' })
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(6.5)
-      doc.text(run.tester.split(' ')[0], cx, y + 19, { align: 'center' })
+      doc.setTextColor(210, 240, 220)
+      doc.text(run.tester.split(' ')[0].substring(0, 7), cx, y + 20, { align: 'center' })
       doc.setFont('helvetica', 'bold')
-      doc.setFontSize(8)
+      doc.setTextColor(255, 255, 255)
     })
-    y += 22
+    y += 24
 
-    // Table rows
     caseRowsOnly.forEach((row, idx) => {
       if (y > pageH - 50) {
+        addFooter(doc.getNumberOfPages(), doc.getNumberOfPages() + 1)
         doc.addPage()
         y = margin
       }
-      const bg: [number, number, number] = idx % 2 === 0 ? [255, 255, 255] : [248, 250, 252]
+      const bg: [number, number, number] = idx % 2 === 0 ? [255, 255, 255] : [248, 250, 253]
       doc.setFillColor(...bg)
-      doc.rect(margin, y, pageW - margin * 2, 20, 'F')
+      doc.rect(margin, y, tW, 20, 'F')
+      // Subtle borders
+      doc.setDrawColor(235, 238, 242)
+      doc.line(margin, y + 20, margin + tW, y + 20)
 
-      // Row number
-      doc.setTextColor(150, 150, 150)
+      doc.setTextColor(160, 168, 180)
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(7.5)
-      doc.text(String(idx + 1), margin + 4, y + 14)
+      doc.text(String(idx + 1), margin + 6, y + 14)
 
-      // Title
-      doc.setTextColor(30, 30, 40)
+      doc.setTextColor(40, 45, 60)
       doc.setFontSize(8.5)
       const title = row.number ? `${row.number}: ${row.title}` : row.title
-      doc.text(doc.splitTextToSize(title, titleColW - 8)[0], margin + numCol + 4, y + 14)
+      doc.text(doc.splitTextToSize(title, titleColW - 12)[0], margin + numCol + 6, y + 14)
 
-      // Status per run
       runs.forEach((run, i) => {
         const res = resultsMap[run.id]?.[row.id]
         const status = res?.status || 'not_run'
         const cx = margin + numCol + titleColW + runColW * i + runColW / 2
-        doc.setTextColor(...statusColors[status])
+        doc.setTextColor(...sCol[status])
         doc.setFont('helvetica', 'bold')
         doc.setFontSize(7.5)
-        doc.text(statusLabels[status], cx, y + 14, { align: 'center' })
+        doc.text(sLabel[status], cx, y + 14, { align: 'center' })
       })
-
       y += 20
     })
 
-    // ── FOOTER ──
-    doc.setTextColor(150, 150, 150)
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(7.5)
-    doc.text(`QAFlow Combined Report  ·  ${script?.name || ''}  ·  ${new Date().toLocaleString()}`, margin, pageH - 18)
+    // ── FOOTER all pages ──
+    const totalPages = doc.getNumberOfPages()
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p)
+      addFooter(p, totalPages)
+    }
 
-    doc.save(`QAFlow-Combined-Report-${script?.name || 'script'}-${runs.length}runs.pdf`)
+    doc.save(`Testra-Test-Report-${script?.name || 'script'}-${runs.length}runs.pdf`)
   }
 
   return (
@@ -424,7 +587,7 @@ export default function ScriptPage() {
           flexShrink: 0, borderRadius: '14px 14px 0 0',
           boxShadow: 'inset 0 -1px 0 var(--border)',
         }}>
-          <button onClick={() => router.push(`/projects/${id}/plan/${planId}`)}
+          <button onClick={() => router.back()}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               fontSize: 13, color: 'var(--text-secondary)',
@@ -434,18 +597,33 @@ export default function ScriptPage() {
             }}
             onMouseEnter={e => { e.currentTarget.style.color='var(--text-primary)'; e.currentTarget.style.borderColor='var(--border-accent)' }}
             onMouseLeave={e => { e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.borderColor='var(--border-strong)' }}>
-            ← Plan
+            ← Back
           </button>
           <div style={{ width:1, height:16, background:'var(--border-strong)' }} />
-          <span style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 700 }}>{script?.name}</span>
-          {topStats && activeRunId && (
-            <>
-              <div style={{ width:1, height:16, background:'var(--border-strong)' }} />
-              <span style={{ fontSize:12, color:'var(--color-pass)', fontWeight:700 }}>✓ {topStats.pass}</span>
-              <span style={{ fontSize:12, color:'var(--color-fail)', fontWeight:700 }}>✗ {topStats.fail}</span>
-              <span style={{ fontSize:12, color:'var(--color-blocked)', fontWeight:700 }}>⊘ {topStats.blocked}</span>
-              <span style={{ fontSize:12, color:'var(--text-secondary)', fontWeight:500 }}>{topStats.done}/{topStats.total} ({topStats.pct}%)</span>
-            </>
+          <div style={{
+            display:'flex', alignItems:'center', gap:6,
+            background:'linear-gradient(135deg,rgba(99,102,241,0.15) 0%,rgba(99,102,241,0.08) 100%)',
+            border:'1px solid rgba(99,102,241,0.3)', borderRadius:8, padding:'4px 12px',
+          }}>
+            <span style={{ fontSize:11, color:'rgba(99,102,241,0.7)' }}>▶</span>
+            <span style={{ fontSize:13, color:'var(--text-primary)', fontWeight:700, letterSpacing:'-0.2px' }}>{script?.name}</span>
+          </div>
+          {allRunsStats && (
+            <div style={{
+              display:'flex', alignItems:'center', gap:5,
+              background:'var(--bg-depth)', border:'1px solid var(--border)',
+              borderRadius:7, padding:'4px 10px',
+            }}>
+              <span style={{ fontSize:11, color:'#22c55e', fontWeight:700 }}>✓{allRunsStats.pass}</span>
+              <span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span>
+              <span style={{ fontSize:11, color:'#ef4444', fontWeight:700 }}>✗{allRunsStats.fail}</span>
+              <span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span>
+              <span style={{ fontSize:11, color:'#f59e0b', fontWeight:700 }}>⊘{allRunsStats.blocked}</span>
+              {allRunsStats.query > 0 && <><span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span><span style={{ fontSize:11, color:'#3b82f6', fontWeight:700 }}>?{allRunsStats.query}</span></>}
+              {allRunsStats.exclude > 0 && <><span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span><span style={{ fontSize:11, color:'#475569', fontWeight:700 }}>–{allRunsStats.exclude}</span></>}
+              <span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span>
+              <span style={{ fontSize:11, color:'var(--text-secondary)', fontWeight:600 }}>{allRunsStats.done}/{allRunsStats.total} <span style={{ fontWeight:400, color:'var(--text-muted)' }}>{allRunsStats.pct}%</span></span>
+            </div>
           )}
           <div style={{ flex: 1 }} />
           {runs.length > 0 && (
@@ -477,96 +655,66 @@ export default function ScriptPage() {
           </button>
         </div>
 
-        {/* Script title + run column headers */}
+        {/* Run column headers */}
         <div style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)' }}>
-          {/* Script info */}
-          <div style={{ flex: 1, padding: '18px 28px', minWidth: 0, display: 'flex', alignItems: 'center' }}>
-            <div>
-              <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', margin: 0, letterSpacing: '-0.4px' }}>{script?.name}</h2>
-              {script?.description && <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '4px 0 0' }}>{script.description}</p>}
-            </div>
-          </div>
+          <div style={{ flex: 1, minWidth: 0 }} />
 
           {/* Run columns */}
           <div style={{ display: 'flex', flexShrink: 0 }}>
             {runs.map(run => {
               const isActive = activeRunId === run.id
-              const isCompleted = run.status === 'completed'
               const st = getScriptStats(scriptId, run.id)
               return (
                 <div key={run.id}
                   onClick={() => handleSelectRun(run.id)}
                   style={{
-                    width: 136, padding: '12px 14px 10px', borderLeft: '1px solid var(--border)',
-                    cursor: 'pointer', userSelect: 'none', position: 'relative', overflow: 'hidden',
+                    width: 136, padding: '8px 10px', borderLeft: '1px solid var(--border)',
+                    cursor: 'pointer', userSelect: 'none',
                     background: isActive ? 'var(--accent-muted)' : 'transparent',
-                    borderTop: isActive ? '3px solid var(--accent)' : isCompleted ? '3px solid #16a34a' : '3px solid transparent',
-                    transition: 'all 0.15s',
+                    borderTop: isActive ? '3px solid var(--accent)' : '3px solid transparent',
+                    transition: 'all 0.15s', display: 'flex', flexDirection: 'column', gap: 5,
                   }}
                   onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)' }}
                   onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}>
-                  {/* Completed watermark */}
-                  {isCompleted && (
-                    <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none', zIndex:1 }}>
-                      <span style={{ fontSize:9.5, fontWeight:900, color:'rgba(34,197,94,0.18)', letterSpacing:'0.15em', textTransform:'uppercase', transform:'rotate(-30deg)', whiteSpace:'nowrap' }}>
-                        COMPLETE
-                      </span>
-                    </div>
-                  )}
 
-                  {/* Run number badge */}
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
-                    <div style={{ background: isActive ? 'var(--accent)' : 'var(--bg-depth)', borderRadius:6, padding:'2px 9px' }}>
-                      <span style={{ fontSize:12, fontWeight:700, color: isActive ? 'white' : 'var(--text-secondary)', letterSpacing:'0.04em' }}>RUN {run.number}</span>
+                  {/* Run badge + tester on same row */}
+                  <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                    <div style={{ background: isActive ? 'var(--accent)' : 'var(--bg-depth)', borderRadius:5, padding:'1px 7px', flexShrink:0 }}>
+                      <span style={{ fontSize:11, fontWeight:700, color: isActive ? 'white' : 'var(--text-secondary)', letterSpacing:'0.04em' }}>#{run.number}</span>
                     </div>
+                    <span style={{ fontSize:12, fontWeight:600, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>{run.tester}</span>
                   </div>
 
-                  {/* Tester */}
-                  <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:'var(--text-muted)', marginBottom:2 }}>Tester</div>
-                  <div style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:8 }}>{run.tester}</div>
-
-                  {/* Date + Build in a row */}
-                  <div style={{ display:'flex', gap:10, marginBottom:10 }}>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:'var(--text-muted)', marginBottom:2 }}>Date</div>
-                      <div style={{ fontSize:12, color:'var(--text-body)', whiteSpace:'nowrap' }}>{run.date}</div>
-                    </div>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontSize:12, color:'var(--accent-hover)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginTop:14 }}>{run.build || '—'}</div>
-                    </div>
-                  </div>
+                  {/* Date + time on one line */}
+                  <div style={{ fontSize:10, color:'var(--text-muted)', whiteSpace:'nowrap' }}>{run.date} · {run.time}</div>
 
                   {/* Progress bar */}
-                  <div style={{ height:5, background:'var(--border-track)', borderRadius:3, overflow:'hidden', display:'flex', marginBottom:5 }}>
+                  <div style={{ height:4, background:'var(--border-track)', borderRadius:3, overflow:'hidden', display:'flex' }}>
                     {st.pass > 0    && <div style={{ flex: st.pass,    background: '#22c55e' }} />}
                     {st.fail > 0    && <div style={{ flex: st.fail,    background: '#ef4444' }} />}
                     {st.blocked > 0 && <div style={{ flex: st.blocked, background: '#f59e0b' }} />}
-                    {st.total - st.pass - st.fail - st.blocked > 0 && <div style={{ flex: st.total - st.pass - st.fail - st.blocked, background:'var(--border-track)' }} />}
+                    {st.query > 0   && <div style={{ flex: st.query,   background: '#3b82f6' }} />}
+                    {st.total - st.pass - st.fail - st.blocked - st.query > 0 && <div style={{ flex: st.total - st.pass - st.fail - st.blocked - st.query, background:'var(--border-track)' }} />}
                   </div>
-                  <div style={{ fontSize:12, fontWeight:600, color:'var(--text-secondary)', marginBottom:8 }}>{st.done}/{st.total} &nbsp;<span style={{ color:'var(--text-muted)', fontWeight:400 }}>{st.pct}%</span></div>
+                  <div style={{ fontSize:11, fontWeight:600, color:'var(--text-secondary)' }}>{st.done}/{st.total} <span style={{ fontWeight:400, color:'var(--text-muted)' }}>{st.pct}%</span></div>
 
-                  {/* Toggle panel button — always visible when run is active */}
-                  {isActive && (
-                    <button onClick={e => { e.stopPropagation(); setPanelVisible(v => !v) }}
-                      style={{
-                        background: panelVisible ? 'var(--bg-depth)' : 'var(--accent-muted)',
-                        border: panelVisible ? '1px solid var(--border)' : '1px solid var(--border-accent)',
-                        borderRadius:6, cursor:'pointer',
-                        color: panelVisible ? 'var(--text-muted)' : 'var(--accent-hover)',
-                        fontSize:11, fontWeight:600, padding:'4px 8px', marginBottom:6,
-                        display:'block', width:'100%', textAlign:'center', transition:'all 0.12s',
-                      }}>
-                      {panelVisible ? '× Close Panel' : '▶ Open Panel'}
+                  {/* Action buttons */}
+                  <div style={{ display:'flex', gap:4 }}>
+                    {isActive && (
+                      <button onClick={e => { e.stopPropagation(); setPanelVisible(v => !v) }}
+                        style={{ flex:1, background:'var(--accent-muted)', border:'1px solid var(--border-accent)', borderRadius:5, cursor:'pointer', color:'var(--accent-hover)', fontSize:10, fontWeight:600, padding:'3px 4px', textAlign:'center', transition:'all 0.12s' }}
+                        onMouseEnter={e => { e.currentTarget.style.background='var(--accent-soft)' }}
+                        onMouseLeave={e => { e.currentTarget.style.background='var(--accent-muted)' }}>
+                        {panelVisible ? '× Panel' : '▶ Panel'}
+                      </button>
+                    )}
+                    <button onClick={e => { e.stopPropagation(); if (confirm('Delete run?')) { deleteTestRun(planId, run.id); if (activeRunId === run.id) { setActiveRunId(null); setActiveRowId(null) } reload() } }}
+                      style={{ flex:1, background:'none', border:'1px solid var(--border)', borderRadius:5, cursor:'pointer', color:'var(--text-muted)', fontSize:10, padding:'3px 4px', textAlign:'center', transition:'all 0.12s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.1)'; e.currentTarget.style.color='#f87171'; e.currentTarget.style.borderColor='rgba(239,68,68,0.3)' }}
+                      onMouseLeave={e => { e.currentTarget.style.background='none'; e.currentTarget.style.color='var(--text-muted)'; e.currentTarget.style.borderColor='var(--border)' }}>
+                      ✕ Remove
                     </button>
-                  )}
-
-                  {/* Remove button */}
-                  <button onClick={e => { e.stopPropagation(); if (confirm('Delete run?')) { deleteTestRun(planId, run.id); if (activeRunId === run.id) { setActiveRunId(null); setActiveRowId(null) } reload() } }}
-                    style={{ background:'none', border:'1px solid var(--border)', borderRadius:5, cursor:'pointer', color:'var(--text-muted)', fontSize:11, padding:'3px 8px', display:'block', width:'100%', textAlign:'center', transition:'all 0.12s' }}
-                    onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.1)'; e.currentTarget.style.color='#f87171'; e.currentTarget.style.borderColor='rgba(239,68,68,0.3)' }}
-                    onMouseLeave={e => { e.currentTarget.style.background='none'; e.currentTarget.style.color='var(--text-muted)'; e.currentTarget.style.borderColor='var(--border)' }}>
-                    ✕ Remove
-                  </button>
+                  </div>
                 </div>
               )
             })}
@@ -640,20 +788,38 @@ export default function ScriptPage() {
                     <input autoFocus value={editTitle}
                       onChange={e => setEditTitle(e.target.value)}
                       onBlur={() => { if (editTitle.trim()) updateRow(scriptId, row.id, { title: editTitle.trim() }); setEditingRowId(null); reload() }}
-                      onKeyDown={e => { if (e.key === 'Enter') { if (editTitle.trim()) updateRow(scriptId, row.id, { title: editTitle.trim() }); setEditingRowId(null); reload() } if (e.key === 'Escape') setEditingRowId(null) }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && e.shiftKey) {
+                          e.preventDefault()
+                          if (editTitle.trim()) updateRow(scriptId, row.id, { title: editTitle.trim() })
+                          insertBlankRowAbove(row.id)
+                          return
+                        }
+                        if (e.key === 'Enter') {
+                          if (editTitle.trim()) updateRow(scriptId, row.id, { title: editTitle.trim() })
+                          setEditingRowId(null)
+                          reload()
+                        }
+                        if (e.key === 'Escape') setEditingRowId(null)
+                      }}
                       style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: '2px solid var(--accent)', outline: 'none', fontSize: 14, color: 'var(--text-primary)', padding: '2px 0' }} />
                   ) : (
                     <>
                       <span
-                        onDoubleClick={() => { setEditingRowId(row.id); setEditTitle(row.title) }}
+                        onDoubleClick={() => startEditingRow(row.id, row.title)}
                         style={{
                           fontSize: isHeading ? 14 : 14,
                           fontWeight: isHeading ? 700 : 400,
                           color: isHeading ? 'var(--text-primary)' : 'var(--text-body)',
                           flex: 1, lineHeight: 1.5,
                           letterSpacing: isHeading ? '0.01em' : 'normal',
+                          minHeight: 22,
+                          display: 'flex',
+                          alignItems: 'center',
                         }}>
-                        {isHeading ? row.title : (row.number ? `${row.number}: ${row.title}` : row.title)}
+                        {row.title
+                          ? (isHeading ? row.title : (row.number ? `${row.number}: ${row.title}` : row.title))
+                          : <span style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>Double-click to edit</span>}
                       </span>
                       {!isHeading && (
                         <button
@@ -713,18 +879,10 @@ export default function ScriptPage() {
             <input ref={addInputRef} value={newTitle}
               onChange={e => setNewTitle(e.target.value)}
               onKeyDown={handleAddRow}
-              placeholder="Type test case title and press Enter..."
+              placeholder="Add test case..."
               style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: 14, color: 'var(--text-secondary)', padding: '8px 14px' }} />
           </div>
 
-          {/* Tip */}
-          <div style={{ padding: '14px 28px', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 2 }}>
-            <div>• Press <strong style={{ color: 'var(--text-body)' }}>Enter</strong> to add a new row</div>
-            <div>• <strong style={{ color: 'var(--text-body)' }}>Double-click</strong> any row to edit text</div>
-            <div>• <strong style={{ color: 'var(--text-body)' }}>Right-click</strong> any row → <strong style={{ color: 'var(--text-body)' }}>"Make Heading"</strong> to turn it into a section heading</div>
-            <div>• Click a <strong style={{ color: 'var(--text-muted)' }}>run column</strong> to select it, then click any row to mark result</div>
-            <div>• Click the <strong style={{ color: 'var(--text-muted)' }}>▭ icon</strong> or press <strong style={{ color: 'var(--text-muted)' }}>D</strong> to open the detail panel for a test case</div>
-          </div>
         </div>
       </div>
 
@@ -755,7 +913,6 @@ export default function ScriptPage() {
                 onMouseLeave={e => { e.currentTarget.style.background='var(--bg-surface)'; e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.borderColor='var(--border-mid)' }}>
                 close
               </button>
-              <span style={{ fontSize:10.5, color:'var(--text-muted)', background:'var(--bg-surface)', border:'1px solid var(--border-mid)', borderRadius:4, padding:'4px 7px', fontWeight:600, letterSpacing:'0.04em' }}>ESC</span>
             </div>
           </div>
 
@@ -866,7 +1023,7 @@ export default function ScriptPage() {
                 <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6, display:'block' }}>COMMENTS</label>
                   <textarea value={panelComment} onChange={e => setPanelComment(e.target.value)} onBlur={savePanelNote}
-                    placeholder="enter any comments here"
+                    placeholder="Add observations or notes for this test case..."
                     rows={3}
                     style={{ width:'100%', padding:'7px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:6, fontSize:12, color:'var(--text-body)', resize:'none', outline:'none', fontFamily:'inherit', boxSizing:'border-box' }} />
                 </div>
@@ -875,7 +1032,7 @@ export default function ScriptPage() {
                 <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
                   <label style={{ display:'block', fontSize:10, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>BUG TRACKING</label>
                   <input value={panelBugId} onChange={e => setPanelBugId(e.target.value)} onBlur={savePanelNote}
-                    placeholder="enter a bug number here"
+                    placeholder="Bug ID or ticket reference (e.g. BUG-123)"
                     style={{ width:'100%', padding:'7px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:6, fontSize:12, color:'var(--text-body)', outline:'none', boxSizing:'border-box' }} />
                 </div>
 
@@ -1056,23 +1213,74 @@ export default function ScriptPage() {
 
       {/* New Run modal */}
       {addingRun && (
-        <div style={{ position: 'fixed', inset: 0, background: 'var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 400 }}>
-          <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-strong)', borderRadius: 14, padding: 24, width: 360, boxShadow: '0 24px 64px rgba(0,0,0,0.6)' }}>
-            <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 18px' }}>Start New Test Run</h3>
-            <form onSubmit={handleAddRun} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,20,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 400 }}>
+          <div style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 16,
+            width: 380,
+            boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
+            overflow: 'hidden',
+          }}>
+            {/* Modal header */}
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(22,163,74,0.12) 0%, rgba(22,163,74,0.04) 100%)',
+              borderBottom: '1px solid rgba(22,163,74,0.15)',
+              padding: '18px 24px',
+              display: 'flex', alignItems: 'center', gap: 12,
+            }}>
+              <div style={{
+                width: 34, height: 34, borderRadius: 9,
+                background: 'linear-gradient(135deg,#16a34a 0%,#15803d 100%)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                boxShadow: '0 3px 10px rgba(22,163,74,0.35)',
+                fontSize: 15, color: 'white', flexShrink: 0, lineHeight: 1,
+              }}>⚡</div>
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 5 }}>Tester Name</label>
-                <input autoFocus value={runTester} onChange={e => setRunTester(e.target.value)}
-                  placeholder="e.g. Hamdan - QA"
-                  style={{ width: '100%', padding: '9px 12px', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: 8, fontSize: 13, color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box' }} />
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.2px' }}>New Test Run</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>{script?.name}</div>
               </div>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
-                <button type="button" onClick={() => setAddingRun(false)}
-                  style={{ padding: '8px 16px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-strong)', borderRadius: 7, fontSize: 12, cursor: 'pointer' }}>
+            </div>
+
+            {/* Form body */}
+            <form onSubmit={handleAddRun} style={{ padding: '20px 24px 22px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 7 }}>Tester Name</label>
+                <input autoFocus value={runTester} onChange={e => setRunTester(e.target.value)}
+                  placeholder="Enter tester name"
+                  style={{
+                    width: '100%', padding: '10px 14px',
+                    background: 'var(--bg-depth)',
+                    border: '1.5px solid var(--border-strong)',
+                    borderRadius: 9, fontSize: 13.5,
+                    color: 'var(--text-primary)', outline: 'none',
+                    boxSizing: 'border-box', transition: 'border-color 0.15s',
+                  }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'rgba(22,163,74,0.5)' }}
+                  onBlur={e => { e.currentTarget.style.borderColor = 'var(--border-strong)' }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button type="button" onClick={() => { setAddingRun(false); setRunTester('') }}
+                  style={{
+                    flex: 1, padding: '10px', background: 'transparent',
+                    color: 'var(--text-secondary)', border: '1px solid var(--border-strong)',
+                    borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: 'pointer', transition: 'all 0.14s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-depth)'; e.currentTarget.style.color = 'var(--text-primary)' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)' }}>
                   Cancel
                 </button>
                 <button type="submit"
-                  style={{ padding: '8px 20px', background: 'var(--accent)', color: 'white', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                  style={{
+                    flex: 2, padding: '10px',
+                    background: 'linear-gradient(135deg,#16a34a 0%,#15803d 100%)',
+                    color: 'white', border: 'none', borderRadius: 9,
+                    fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                    boxShadow: '0 4px 14px rgba(22,163,74,0.4)', transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 6px 20px rgba(22,163,74,0.55)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
+                  onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 4px 14px rgba(22,163,74,0.4)'; e.currentTarget.style.transform = 'none' }}>
                   Start Run
                 </button>
               </div>

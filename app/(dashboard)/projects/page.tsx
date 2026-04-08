@@ -10,10 +10,6 @@ export default function ProjectsPage() {
   useEffect(() => {
     const p = getProjects()
     setProjects(p)
-    if (p.length === 1) {
-      const plans = getPlans(p[0].id)
-      router.push(plans.length ? `/projects/${p[0].id}/plan/${plans[0].id}` : '/projects/' + p[0].id)
-    }
   }, [])
 
   if (projects.length === 0) {

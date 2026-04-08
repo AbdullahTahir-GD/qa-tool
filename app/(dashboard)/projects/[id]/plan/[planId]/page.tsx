@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import {
   getProjects, getPlans, getFolders, saveFolder, deleteFolder, updateFolder,
   getScripts, saveScript, deleteScript, duplicateScript, duplicateFolder, getTestRuns,
-  getFolderStats, getScriptStats,
+  getScriptStats, getScriptStatsAllRuns, getFolderStatsAllRuns,
   type Project, type TestPlan, type Folder, type Script, type TestRun
 } from '@/lib/store'
 import { Home, ChevronDown, ChevronRight, Plus, FolderOpen, FileText } from 'lucide-react'
@@ -26,7 +26,6 @@ function MiniBar({ pass,fail,blocked,query,total }: { pass:number; fail:number; 
   )
 }
 
-/* Premium stat block — each stat stacked vertically: label on top, count below */
 function StatBlock({ pass, fail, blocked, query, done, total, pct }:
   { pass:number; fail:number; blocked:number; query:number; done:number; total:number; pct:number }) {
   const items = [
@@ -48,16 +47,30 @@ function StatBlock({ pass, fail, blocked, query, done, total, pct }:
           </div>
         </div>
       ))}
-      {/* Progress bar */}
       <div style={{ margin:'0 14px 0 14px', flexShrink:0 }}>
         <MiniBar pass={pass} fail={fail} blocked={blocked} query={query} total={total} />
       </div>
-      {/* Total */}
       <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0, minWidth:52 }}>
         <span style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:'var(--text-muted)', lineHeight:1, marginBottom:3 }}>Done</span>
         <span style={{ fontSize:13, fontWeight:700, color:'var(--text-primary)', lineHeight:1 }}>{done}/{total} <span style={{ fontSize:11, fontWeight:500, color:'var(--text-secondary)' }}>{pct}%</span></span>
       </div>
     </div>
+  )
+}
+
+// Simple toast
+function Toast({ msg, onDone }: { msg: string; onDone: () => void }) {
+  useEffect(() => { const t = setTimeout(onDone, 2400); return () => clearTimeout(t) }, [onDone])
+  return createPortal(
+    <div style={{
+      position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)',
+      background:'#1e2235', border:'1px solid rgba(255,255,255,0.12)',
+      borderRadius:10, padding:'10px 20px', fontSize:13, fontWeight:500,
+      color:'rgba(255,255,255,0.85)', zIndex:99999,
+      boxShadow:'0 4px 24px rgba(0,0,0,0.45)',
+      pointerEvents:'none', whiteSpace:'nowrap',
+    }}>{msg}</div>,
+    document.body
   )
 }
 
@@ -70,7 +83,7 @@ export default function PlanPage() {
   const [scripts, setScripts] = useState<Script[]>([])
   const [runs, setRuns] = useState<TestRun[]>([])
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const [expandedScripts, setExpandedScripts] = useState<Set<string>>(new Set())
+  const [toast, setToast] = useState<string | null>(null)
 
   // context menus
   const [folderMenu, setFolderMenu] = useState<{ x:number; y:number; folderId:string } | null>(null)
@@ -92,6 +105,10 @@ export default function PlanPage() {
   const folderMenuRef = useRef<HTMLDivElement>(null)
   const scriptMenuRef = useRef<HTMLDivElement>(null)
 
+  const showToast = useCallback((msg: string) => {
+    setToast(msg)
+  }, [])
+
   const reload = useCallback(() => {
     setFolders(getFolders(planId))
     setScripts(getScripts(planId))
@@ -107,9 +124,13 @@ export default function PlanPage() {
   }, [id, planId, reload])
 
   useEffect(() => {
+    window.addEventListener('qaflow:change', reload)
+    return () => window.removeEventListener('qaflow:change', reload)
+  }, [reload])
+
+  useEffect(() => {
     const handler = (e: MouseEvent) => {
       const t = e.target as Node
-      // Only close context menus when clicking OUTSIDE them
       if (folderMenuRef.current && !folderMenuRef.current.contains(t)) setFolderMenu(null)
       if (scriptMenuRef.current && !scriptMenuRef.current.contains(t)) setScriptMenu(null)
       if (folderDDRef.current && !folderDDRef.current.contains(t)) setFolderDropdown(false)
@@ -127,14 +148,12 @@ export default function PlanPage() {
   const handleFolderCtx = (e: React.MouseEvent, folderId: string) => {
     e.preventDefault(); e.stopPropagation()
     const { x, y } = ctxPos(e, 220, 140)
-    setFolderMenu({ x, y, folderId })
-    setScriptMenu(null)
+    setFolderMenu({ x, y, folderId }); setScriptMenu(null)
   }
   const handleScriptCtx = (e: React.MouseEvent, scriptId: string) => {
     e.preventDefault(); e.stopPropagation()
     const { x, y } = ctxPos(e, 220, 120)
-    setScriptMenu({ x, y, scriptId })
-    setFolderMenu(null)
+    setScriptMenu({ x, y, scriptId }); setFolderMenu(null)
   }
 
   const handleAddScript = (folderId: string) => {
@@ -157,18 +176,25 @@ export default function PlanPage() {
     setNewFolderName(''); setAddingFolder(false); reload()
   }
 
-  const activeRun = runs.length > 0 ? runs[runs.length-1] : null
+  const hasFolders = folders.length > 0
 
+  // Overall stats across ALL runs (best status per test case)
   const planStats = useMemo(() => {
-    if (!activeRun) return null
+    if (runs.length === 0) return null
     let pass=0,fail=0,blocked=0,query=0,done=0,total=0
-    folders.forEach(f => { const st=getFolderStats(planId,f.id,activeRun.id); pass+=st.pass;fail+=st.fail;blocked+=st.blocked;query+=st.query;done+=st.done;total+=st.total })
-    const pct = total>0?Math.round((pass/total)*100):0
-    return {pass,fail,blocked,query,done,total,pct}
-  }, [activeRun, folders, planId])
+    folders.forEach(f => {
+      const st = getFolderStatsAllRuns(planId, f.id)
+      pass+=st.pass; fail+=st.fail; blocked+=st.blocked; query+=st.query; done+=st.done; total+=st.total
+    })
+    const pct = total>0 ? Math.round((pass/total)*100) : 0
+    return { pass,fail,blocked,query,done,total,pct }
+  }, [runs, folders, planId])
 
   return (
     <div style={{ width: '100%' }}>
+
+      {/* Toast */}
+      {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
 
       {/* ── Top action bar ── */}
       <div style={{
@@ -179,8 +205,8 @@ export default function PlanPage() {
         border:'1px solid var(--border-strong)',
         boxShadow:'var(--shadow-sm)',
       }}>
-        {/* Home button */}
-        <button onClick={() => router.push('/projects/'+id)}
+        {/* Back to project */}
+        <button onClick={() => router.push('/projects')}
           style={{
             background:'var(--bg-elevated)', border:'1px solid var(--border-strong)',
             borderRadius:8, padding:'6px 9px', cursor:'pointer',
@@ -191,7 +217,7 @@ export default function PlanPage() {
           <Home size={14} color="var(--text-secondary)" />
         </button>
 
-        {/* Stats pill */}
+        {/* Overall stats pill (all runs combined) */}
         {runs.length > 0 && planStats && (
           <div style={{
             display:'flex', alignItems:'center', gap:0,
@@ -208,19 +234,25 @@ export default function PlanPage() {
         <div style={{ flex:1 }} />
         <span style={{ fontSize:13.5, fontWeight:600, color:'var(--text-secondary)', marginRight:4 }}>{plan?.name}</span>
 
-        {/* Script button */}
+        {/* Script button — disabled if no folders */}
         <div ref={scriptDDRef} style={{ position:'relative' }}>
-          <button onClick={() => setScriptDropdown(v=>!v)}
+          <button
+            onClick={() => {
+              if (!hasFolders) { showToast('Create a folder first before adding scripts'); return }
+              setScriptDropdown(v => !v)
+            }}
             style={{
               display:'flex', alignItems:'center', gap:6,
               padding:'7px 14px',
-              background:'var(--bg-elevated)',
+              background: hasFolders ? 'var(--bg-elevated)' : 'var(--bg-depth)',
               border:'1px solid var(--border-strong)',
               borderRadius:9, fontSize:13, color:'var(--text-body)',
-              cursor:'pointer', fontWeight:500, transition:'all 0.14s',
+              cursor: hasFolders ? 'pointer' : 'not-allowed',
+              fontWeight:500, transition:'all 0.14s',
+              opacity: hasFolders ? 1 : 0.5,
             }}
-            onMouseEnter={e => { e.currentTarget.style.background='var(--bg-hover)' }}
-            onMouseLeave={e => { e.currentTarget.style.background='var(--bg-elevated)' }}>
+            onMouseEnter={e => { if (hasFolders) e.currentTarget.style.background='var(--bg-hover)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = hasFolders ? 'var(--bg-elevated)' : 'var(--bg-depth)' }}>
             <Plus size={13} color="var(--text-secondary)" /> Script <ChevronDown size={12} />
           </button>
           {scriptDropdown && (
@@ -230,23 +262,29 @@ export default function PlanPage() {
           )}
         </div>
 
-        {/* Folder button */}
+        {/* Folder button — disabled while name input is open */}
         <div ref={folderDDRef} style={{ position:'relative' }}>
-          <button onClick={() => setFolderDropdown(v=>!v)}
+          <button
+            onClick={() => {
+              if (addingFolder) { showToast('Finish naming the current folder first'); return }
+              setFolderDropdown(v => !v)
+            }}
             style={{
               display:'flex', alignItems:'center', gap:6,
               padding:'7px 16px',
-              background:'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-              border:'none',
-              borderRadius:9, fontSize:13, color:'white',
-              cursor:'pointer', fontWeight:600, transition:'all 0.15s',
-              boxShadow:'0 3px 12px rgba(99,102,241,0.40)',
+              background: addingFolder ? 'var(--bg-depth)' : 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+              border: addingFolder ? '1px solid var(--border-strong)' : 'none',
+              borderRadius:9, fontSize:13, color: addingFolder ? 'var(--text-muted)' : 'white',
+              cursor: addingFolder ? 'not-allowed' : 'pointer',
+              fontWeight:600, transition:'all 0.15s',
+              opacity: addingFolder ? 0.6 : 1,
+              boxShadow: addingFolder ? 'none' : '0 3px 12px rgba(99,102,241,0.40)',
             }}
-            onMouseEnter={e => { e.currentTarget.style.boxShadow='0 4px 18px rgba(99,102,241,0.60)'; e.currentTarget.style.transform='translateY(-1px)' }}
-            onMouseLeave={e => { e.currentTarget.style.boxShadow='0 3px 12px rgba(99,102,241,0.40)'; e.currentTarget.style.transform='none' }}>
-            <FolderOpen size={13} color="rgba(255,255,255,0.9)" /> Folder <ChevronDown size={12} />
+            onMouseEnter={e => { if (!addingFolder) { e.currentTarget.style.boxShadow='0 4px 18px rgba(99,102,241,0.60)'; e.currentTarget.style.transform='translateY(-1px)' } }}
+            onMouseLeave={e => { if (!addingFolder) { e.currentTarget.style.boxShadow='0 3px 12px rgba(99,102,241,0.40)'; e.currentTarget.style.transform='none' } }}>
+            <FolderOpen size={13} color={addingFolder ? 'var(--text-muted)' : 'rgba(255,255,255,0.9)'} /> Folder <ChevronDown size={12} />
           </button>
-          {folderDropdown && (
+          {folderDropdown && !addingFolder && (
             <div style={{ position:'absolute', top:'calc(100% + 6px)', right:0, background:'var(--bg-surface)', border:'1px solid var(--border-strong)', borderRadius:11, padding:'6px 0', minWidth:190, zIndex:9999, boxShadow:'var(--shadow-md)' }}>
               <CtxItem label="+ New folder" onClick={() => { setAddingFolder(true); setFolderDropdown(false); setTimeout(() => folderInputRef.current?.focus(), 30) }} />
             </div>
@@ -262,21 +300,24 @@ export default function PlanPage() {
             onKeyDown={e => { if (e.key === 'Escape') { setAddingFolder(false); setNewFolderName('') } }}
             placeholder="Folder name (e.g. V.1.17.0)"
             style={{ flex:1, padding:'8px 12px', background:'var(--bg-elevated)', border:'1px solid var(--accent)', borderRadius:8, fontSize:13, color:'var(--text-primary)', outline:'none' }} />
-          <button type="submit" style={btnSm}>Create</button>
+          <button type="submit" disabled={!newFolderName.trim()} style={{ ...btnSm, opacity: newFolderName.trim() ? 1 : 0.55, cursor: newFolderName.trim() ? 'pointer' : 'not-allowed' }}>Create</button>
           <button type="button" onClick={() => { setAddingFolder(false); setNewFolderName('') }} style={btnGSm}>Cancel</button>
         </form>
       )}
 
-      {/* ── Folders ── */}
+      {/* ── Empty state ── */}
       {folders.length === 0 && !addingFolder && (
         <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--text-muted)', fontSize:13, border:'1px dashed var(--border)', borderRadius:10 }}>
-          Click <strong style={{ color:'var(--text-secondary)' }}>folder → + new folder</strong> to create your first folder (e.g. V.1.17.0)
+          No folders yet — click <strong style={{ color:'var(--text-secondary)' }}>Folder</strong> above to create your first one
         </div>
       )}
 
+      {/* ── Folders ── */}
       {folders.map(folder => {
         const folderScripts = scripts.filter(s => s.folderId === folder.id)
         const isCollapsed = collapsed.has(folder.id)
+        // All-runs stats for this folder
+        const folderSt = getFolderStatsAllRuns(planId, folder.id)
 
         return (
           <div key={folder.id} style={{ marginBottom:14 }}>
@@ -305,72 +346,39 @@ export default function PlanPage() {
                 <span style={{ fontSize:14.5, fontWeight:700, color:'var(--text-primary)', flex:1, letterSpacing:'-0.2px' }}>{folder.name}</span>
               )}
 
-              {/* Stats */}
-              {activeRun && (() => {
-                const st = getFolderStats(planId, folder.id, activeRun.id)
-                return <StatBlock pass={st.pass} fail={st.fail} blocked={st.blocked} query={st.query} done={st.done} total={st.total} pct={st.pct} />
-              })()}
+              {/* All-runs stats for folder */}
+              {runs.length > 0 && (
+                <StatBlock pass={folderSt.pass} fail={folderSt.fail} blocked={folderSt.blocked} query={folderSt.query} done={folderSt.done} total={folderSt.total} pct={folderSt.pct} />
+              )}
             </div>
 
             {/* Scripts list */}
             {!isCollapsed && (
               <div style={{ border:'1px solid var(--border-strong)', borderTop:'none', borderRadius:'0 0 11px 11px', overflow:'hidden', boxShadow:'var(--shadow-sm)' }}>
                 {folderScripts.map((script, idx) => {
-                  const isExpScr = expandedScripts.has(script.id)
+                  // All-runs stats for this script
+                  const scriptSt = getScriptStatsAllRuns(planId, script.id)
                   return (
                     <div key={script.id}>
                       <div
                         onContextMenu={e => handleScriptCtx(e, script.id)}
-                        style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 16px 11px 36px', background:'var(--bg-surface)', borderBottom: idx < folderScripts.length-1 || addingScriptInFolder===folder.id ? '1px solid var(--border)' : 'none', cursor:'pointer', transition:'background 0.1s' }}
+                        onClick={() => router.push(`/projects/${id}/plan/${planId}/script/${script.id}`)}
+                        style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 16px 11px 46px', background:'var(--bg-surface)', borderBottom: idx < folderScripts.length-1 || addingScriptInFolder===folder.id ? '1px solid var(--border)' : 'none', cursor:'pointer', transition:'background 0.1s' }}
                         onMouseEnter={e => (e.currentTarget.style.background='var(--bg-hover)')}
                         onMouseLeave={e => (e.currentTarget.style.background='var(--bg-surface)')}
                       >
-                        {/* expand runs toggle */}
-                        <button onClick={e => { e.stopPropagation(); setExpandedScripts(prev => { const n=new Set(prev); n.has(script.id)?n.delete(script.id):n.add(script.id); return n }) }}
-                          style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-secondary)', padding:2, flexShrink:0 }}>
-                          {isExpScr ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                        </button>
                         <FileText size={14} color="var(--text-secondary)" strokeWidth={1.5} style={{ flexShrink:0 }} />
-                        <span
-                          onClick={() => router.push(`/projects/${id}/plan/${planId}/script/${script.id}`)}
-                          style={{ fontSize:14, color:'var(--text-body)', fontWeight:500, flex:1, cursor:'pointer', transition:'color 0.1s' }}
+                        <span style={{ fontSize:14, color:'var(--text-body)', fontWeight:500, flex:1, transition:'color 0.1s' }}
                           onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
                           onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-body)')}>
                           {script.name}
                         </span>
 
-                        {/* Stats */}
-                        {activeRun && (() => {
-                          const st = getScriptStats(script.id, activeRun.id)
-                          return <StatBlock pass={st.pass} fail={st.fail} blocked={st.blocked} query={st.query} done={st.done} total={st.total} pct={st.pct} />
-                        })()}
+                        {/* All-runs stats for script */}
+                        {runs.length > 0 && (
+                          <StatBlock pass={scriptSt.pass} fail={scriptSt.fail} blocked={scriptSt.blocked} query={scriptSt.query} done={scriptSt.done} total={scriptSt.total} pct={scriptSt.pct} />
+                        )}
                       </div>
-
-                      {/* Expanded run rows */}
-                      {isExpScr && runs.map(run => {
-                        const st = getScriptStats(script.id, run.id)
-                        return (
-                          <div key={run.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'6px 14px 6px 60px', background:'rgba(0,0,0,0.15)', borderBottom:'1px solid var(--border)', fontSize:11, color:'var(--text-secondary)' }}>
-                            <span style={{ minWidth:20, color:'var(--text-body-dim)' }}>{run.number}</span>
-                            <span style={{ color:'var(--text-dim)' }}>·</span>
-                            <span style={{ color:'var(--text-body)' }}>{run.tester}</span>
-                            <span style={{ color:'var(--text-dim)' }}>·</span>
-                            <span>{run.date}</span>
-                            <span style={{ color:'var(--text-dim)' }}>·</span>
-                            <span>{run.time}</span>
-                            <span style={{ color:'var(--text-dim)' }}>·</span>
-                            <span style={{ color:'var(--accent-hover)' }}>{run.build}</span>
-                            <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8, flexShrink:0 }}>
-                              <span style={{ color:C.pass }}>●{st.pass}</span>
-                              <span style={{ color:C.fail }}>●{st.fail}</span>
-                              <span style={{ color:C.blocked }}>●{st.blocked}</span>
-                              <span style={{ color:C.query }}>●{st.query}</span>
-                              <MiniBar pass={st.pass} fail={st.fail} blocked={st.blocked} query={st.query} total={st.total} />
-                              <span style={{ fontWeight:600, minWidth:60, textAlign:'right' }}>{st.done}/{st.total} {st.pct}%</span>
-                            </div>
-                          </div>
-                        )
-                      })}
                     </div>
                   )
                 })}
@@ -383,12 +391,11 @@ export default function PlanPage() {
                       onKeyDown={e => { if (e.key==='Escape') { setAddingScriptInFolder(null); setNewScriptName('') } }}
                       placeholder="Script name (e.g. Feature Tests)..."
                       style={{ flex:1, padding:'6px 10px', background:'var(--bg-surface)', border:'1px solid var(--accent)', borderRadius:7, fontSize:13, color:'var(--text-primary)', outline:'none' }} />
-                    <button type="submit" style={btnSm}>Add</button>
+                    <button type="submit" disabled={!newScriptName.trim()} style={{ ...btnSm, opacity: newScriptName.trim() ? 1 : 0.55, cursor: newScriptName.trim() ? 'pointer' : 'not-allowed' }}>Add</button>
                     <button type="button" onClick={() => { setAddingScriptInFolder(null); setNewScriptName('') }} style={btnGSm}>Cancel</button>
                   </form>
                 )}
 
-                {/* Add script hint button */}
                 {addingScriptInFolder !== folder.id && (
                   <button onClick={() => handleAddScript(folder.id)}
                     style={{ width:'100%', padding:'9px 16px 9px 64px', background:'none', border:'none', textAlign:'left', fontSize:13, color:'var(--text-muted)', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}
@@ -403,7 +410,7 @@ export default function PlanPage() {
         )
       })}
 
-      {/* ── Right-click context menus (portalled to body so position:fixed is always viewport-relative) ── */}
+      {/* ── Right-click context menus ── */}
       {folderMenu && createPortal(
         <div ref={folderMenuRef} style={{ position:'fixed', left:folderMenu.x, top:folderMenu.y, background:'var(--bg-surface)', border:'1px solid var(--border-strong)', borderRadius:10, padding:'6px 0', minWidth:200, zIndex:9999, boxShadow:'0 8px 32px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.12)' }}>
           <CtxItem label="+ new script" onClick={() => { handleAddScript(folderMenu.folderId); setFolderMenu(null) }} />

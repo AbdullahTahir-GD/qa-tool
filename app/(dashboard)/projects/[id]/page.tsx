@@ -18,7 +18,6 @@ export default function ProjectPage() {
     setProject(p)
     const pl = getPlans(id)
     setPlans(pl)
-    if (pl.length === 1) router.push(`/projects/${id}/plan/${pl[0].id}`)
   }, [id])
 
   const handleCreate = (e: React.FormEvent) => {
@@ -44,7 +43,7 @@ export default function ProjectPage() {
       ) : (
         <button onClick={() => setAdding(true)} style={btn}><Plus size={13} /> New Test Plan</button>
       )}
-      {plans.length > 1 && (
+      {plans.length > 0 && (
         <div style={{ marginTop: 32 }}>
           {plans.map(p => (
             <div key={p.id} onClick={() => router.push(`/projects/${id}/plan/${p.id}`)}
