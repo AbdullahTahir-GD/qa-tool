@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import { useRouter, usePathname } from 'next/navigation'
 import { getProjects, getPlans, deleteProject, type Project } from '@/lib/store'
 import { FolderKanban, Plus, HelpCircle, X } from 'lucide-react'
+import { useSidebar } from '@/components/providers/sidebar-context'
 
 export function SidebarContent() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -11,6 +12,7 @@ export function SidebarContent() {
   const [showHelp, setShowHelp] = useState(false)
   const router   = useRouter()
   const pathname = usePathname()
+  const { isMobile, close } = useSidebar()
 
   const refresh = () => setProjects(getProjects())
   useEffect(() => { refresh() }, [pathname])
@@ -54,7 +56,7 @@ export function SidebarContent() {
       }} />
 
       {/* ── Logo ── */}
-      <div onClick={() => router.push('/projects')}
+      <div onClick={() => { router.push('/projects'); if (isMobile) close() }}
         style={{
           position: 'relative', zIndex: 1,
           padding: '24px 20px 20px',
@@ -138,10 +140,11 @@ export function SidebarContent() {
           return (
             <div
               key={p.id}
-              onClick={() => plans.length >= 1
-                ? router.push(`/projects/${p.id}/plan/${plans[0].id}`)
-                : router.push('/projects/' + p.id)
-              }
+              onClick={() => {
+                if (plans.length >= 1) router.push(`/projects/${p.id}/plan/${plans[0].id}`)
+                else router.push('/projects/' + p.id)
+                if (isMobile) close()
+              }}
               onContextMenu={e => { e.preventDefault(); const x=Math.min(e.clientX,window.innerWidth-180-8); const y=Math.min(e.clientY,window.innerHeight-80-8); setCtxMenu({ x, y, projectId: p.id }) }}
               style={{
                 position: 'relative',

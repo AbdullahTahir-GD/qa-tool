@@ -5,7 +5,9 @@ import { getProjects, getPlans, getRows, getScripts, getFolders, getTestRuns } f
 
 export default function DashboardPage() {
   const [stats, setStats] = useState({ projects:0, plans:0, cases:0, runs:0 })
+  const [cols, setCols] = useState(4)
   const router = useRouter()
+
   useEffect(() => {
     const projects = getProjects()
     let plans=0, cases=0, runs=0
@@ -19,11 +21,19 @@ export default function DashboardPage() {
     })
     setStats({ projects:projects.length, plans, cases, runs })
   }, [])
+
+  useEffect(() => {
+    const update = () => setCols(window.innerWidth < 480 ? 2 : 4)
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
+
   return (
-    <div style={{ maxWidth:800, margin:'0 auto' }}>
+    <div style={{ maxWidth:800, margin:'0 auto', width:'100%' }}>
       <h2 style={{ fontSize:18, fontWeight:700, color:'var(--text-primary)', marginBottom:6 }}>Dashboard</h2>
       <p style={{ fontSize:12, color:'var(--text-muted)', marginBottom:24 }}>Your QA workspace overview</p>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }}>
+      <div style={{ display:'grid', gridTemplateColumns:`repeat(${cols},1fr)`, gap:12 }}>
         {[['Projects',stats.projects,'#6366f1'],['Test Plans',stats.plans,'#60a5fa'],['Test Cases',stats.cases,'#34d399'],['Runs',stats.runs,'#f59e0b']].map(([l,v,c]) => (
           <div key={l as string} style={{ background:'var(--bg-surface)', border:'1px solid var(--border)', borderRadius:10, padding:'16px 18px' }}>
             <div style={{ fontSize:26, fontWeight:700, color:c as string }}>{v as number}</div>

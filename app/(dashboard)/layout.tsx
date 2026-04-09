@@ -12,10 +12,22 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  const { open } = useSidebar()
+  const { open, isMobile, toggle } = useSidebar()
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-base)', display: 'flex' }}>
+
+      {/* ── Mobile backdrop ── */}
+      {isMobile && open && (
+        <div
+          onClick={toggle}
+          style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(0,0,0,0.55)',
+            zIndex: 39,
+          }}
+        />
+      )}
 
       {/* ── Sidebar ── */}
       <aside style={{
@@ -35,9 +47,10 @@ function Shell({ children }: { children: React.ReactNode }) {
 
       {/* ── Main ── */}
       <div style={{
-        marginLeft: open ? 'var(--sidebar-width)' : 0,
+        marginLeft: open && !isMobile ? 'var(--sidebar-width)' : 0,
         transition: 'margin-left 0.24s cubic-bezier(0.4,0,0.2,1)',
         flex: 1, display: 'flex', flexDirection: 'column', minHeight: '100vh',
+        minWidth: 0,
       }}>
 
         {/* Topnav */}
@@ -50,7 +63,6 @@ function Shell({ children }: { children: React.ReactNode }) {
           backdropFilter: 'blur(18px)',
           WebkitBackdropFilter: 'blur(18px)',
           position: 'sticky', top: 0, zIndex: 30,
-          /* Subtle bottom glow line on dark mode */
           boxShadow: '0 1px 0 var(--border), 0 4px 16px rgba(0,0,0,0.18)',
         }}>
           <TopnavContent />
@@ -59,7 +71,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         {/* Page content */}
         <main style={{
           flex: 1,
-          padding: '24px 24px',
+          padding: '24px 16px',
           overflowY: 'auto',
           display: 'flex',
           flexDirection: 'column',

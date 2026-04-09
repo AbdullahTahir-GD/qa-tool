@@ -2,10 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "testra-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 3099
+      "name": "qaflow",
+      "runtimeExecutable": "npm.cmd",
+      "runtimeArgs": ["run", "dev", "--", "--no-turbopack"],
+      "port": 3000
     }
   ]
 }

@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { saveProject, savePlan } from '@/lib/store'
 
@@ -9,7 +9,9 @@ let _submitting = false
 export default function NewProjectPage() {
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
+  const [isSmall, setIsSmall] = useState(false)
   const router = useRouter()
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // Reset lock each time the page mounts (so returning here works normally)
   useEffect(() => {
@@ -17,16 +19,36 @@ export default function NewProjectPage() {
     setCreating(false)
   }, [])
 
-  const canCreate = name.trim().length > 0
+  // Poll for autofill values that bypass React events (browser autofill ignores onChange/onInput)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (inputRef.current && inputRef.current.value !== name) {
+        setName(inputRef.current.value)
+      }
+    }, 150)
+    return () => clearInterval(interval)
+  }, [name])
+
+  useEffect(() => {
+    const check = () => setIsSmall(window.innerWidth < 520)
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
+
+  const canCreate = name.trim().length > 0 || (inputRef.current?.value.trim().length ?? 0) > 0
 
   const handleCreate = () => {
-    if (!canCreate || _submitting) return
+    const actualName = inputRef.current?.value.trim() || name.trim()
+    if (!actualName || _submitting) return
     _submitting = true
     setCreating(true)
-    const p = saveProject(name.trim())
-    const plan = savePlan(p.id, name.trim() + ' - Test Plan')
+    const p = saveProject(actualName)
+    const plan = savePlan(p.id, actualName + ' - Test Plan')
     router.push(`/projects/${p.id}/plan/${plan.id}`)
   }
+
+
 
   const inputStyle: React.CSSProperties = {
     display: 'block', width: '100%', padding: '14px 16px',
@@ -43,7 +65,7 @@ export default function NewProjectPage() {
     <div style={{
       minHeight: 'calc(100vh - 56px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      padding: '32px 24px',
+      padding: isSmall ? '16px 12px' : '32px 24px',
     }}>
       <div style={{ width: '100%', maxWidth: 560 }}>
 
@@ -63,25 +85,38 @@ export default function NewProjectPage() {
           </div>
         </div>
 
-        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-strong)', borderRadius: 18, padding: '44px 44px 40px', boxShadow: '0 12px 48px rgba(0,0,0,0.2)' }}>
-          <h2 style={{ fontSize: 30, fontWeight: 800, color: 'var(--text-primary)', margin: '0 0 10px', letterSpacing: '-0.6px' }}>New Project</h2>
+        <div style={{
+          background: 'var(--bg-surface)', border: '1px solid var(--border-strong)',
+          borderRadius: 18,
+          padding: isSmall ? '28px 20px 24px' : '44px 44px 40px',
+          boxShadow: '0 12px 48px rgba(0,0,0,0.2)',
+        }}>
+          <h2 style={{ fontSize: isSmall ? 24 : 30, fontWeight: 800, color: 'var(--text-primary)', margin: '0 0 10px', letterSpacing: '-0.6px' }}>New Project</h2>
           <p style={{ fontSize: 15, color: 'var(--text-muted)', margin: '0 0 32px', lineHeight: 1.6 }}>Give your project a name to get started</p>
 
           <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Project Name</label>
           <input
+            ref={inputRef}
             autoFocus
+            autoComplete="new-password"
             value={name}
             onChange={e => setName(e.target.value)}
+            onInput={e => setName((e.target as HTMLInputElement).value)}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleCreate() } }}
             placeholder="e.g. MSS - Build Test Plan"
             style={inputStyle}
           />
 
-          <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 12, flexWrap: isSmall ? 'wrap' : 'nowrap' }}>
             <button
               type="button"
               onClick={() => { _submitting = false; router.back() }}
-              style={{ flex: 1, padding: '14px', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-strong)', borderRadius: 11, fontSize: 15, cursor: 'pointer', fontWeight: 500 }}>
+              style={{
+                flex: isSmall ? '1 1 100%' : 1,
+                padding: '14px', background: 'transparent', color: 'var(--text-secondary)',
+                border: '1px solid var(--border-strong)', borderRadius: 11, fontSize: 15,
+                cursor: 'pointer', fontWeight: 500,
+              }}>
               Cancel
             </button>
             <button
@@ -89,7 +124,8 @@ export default function NewProjectPage() {
               onClick={handleCreate}
               disabled={btnDisabled}
               style={{
-                flex: 2, padding: '14px', borderRadius: 11, fontSize: 15, fontWeight: 700,
+                flex: isSmall ? '1 1 100%' : 2,
+                padding: '14px', borderRadius: 11, fontSize: 15, fontWeight: 700,
                 letterSpacing: '0.01em', border: 'none', transition: 'all 0.15s',
                 background: btnDisabled
                   ? 'var(--border-strong)'

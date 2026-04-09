@@ -203,3 +203,27 @@ html, body {
 /* Use opacity-only fill so no stacking-context side-effects survive the animation */
 .animate-fade-in  { animation: fade-in  0.22s ease both; }
 .animate-slide-in { animation: slide-in 0.22s ease both; }
+
+/* ══════════════════════════════════════════════════
+   RESPONSIVE — mobile overrides
+══════════════════════════════════════════════════ */
+@media (max-width: 767px) {
+  :root {
+    --sidebar-width: 280px;
+    --topnav-height: 52px;
+  }
+
+  /* Prevent horizontal scroll */
+  html, body { overflow-x: hidden; }
+
+  /* Tighter topnav padding on mobile */
+  header { padding: 0 14px !important; }
+
+  /* Truncate long breadcrumb text sooner */
+  header span[style*="maxWidth"] { max-width: 120px !important; }
+}
+
+@media (max-width: 479px) {
+  /* Extra compact topnav text */
+  header span[style*="maxWidth"] { max-width: 90px !important; }
+}

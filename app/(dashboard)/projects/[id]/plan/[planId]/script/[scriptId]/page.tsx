@@ -52,6 +52,7 @@ export default function ScriptPage() {
   const [rowMenu, setRowMenu] = useState<{ x: number; y: number; rowId: string } | null>(null)
 
   const addInputRef = useRef<HTMLInputElement>(null)
+  const runHeaderRef = useRef<HTMLDivElement>(null)
 
   const reload = useCallback(() => {
     const allScripts = getScripts(planId)
@@ -597,6 +598,7 @@ export default function ScriptPage() {
           borderBottom: '1px solid var(--border-strong)',
           flexShrink: 0, borderRadius: '14px 14px 0 0',
           boxShadow: 'inset 0 -1px 0 var(--border)',
+          flexWrap: 'wrap', rowGap: 6,
         }}>
           <button onClick={() => router.back()}
             style={{
@@ -680,7 +682,7 @@ export default function ScriptPage() {
         </div>
 
         {/* Run column headers — only shown when runs exist */}
-        {runs.length > 0 && <div style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)' }}>
+        {runs.length > 0 && <div ref={runHeaderRef} style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)', overflowX: 'hidden' }}>
           {/* Spacer must match test-case row left section exactly: 58px (num) + 26px (icon) + flex:1 (title) */}
           <div style={{ width: 58, flexShrink: 0 }} />
           <div style={{ width: 26, flexShrink: 0 }} />
@@ -759,7 +761,9 @@ export default function ScriptPage() {
         </div>}
 
         {/* ── Rows ── */}
-        <div style={{ flex: 1, overflowY: 'auto' }} onClick={() => { setActiveRowId(null) }}>
+        <div style={{ flex: 1, overflowY: 'auto', overflowX: 'auto' }}
+          onScroll={e => { if (runHeaderRef.current) runHeaderRef.current.scrollLeft = (e.currentTarget as HTMLDivElement).scrollLeft }}
+          onClick={() => { setActiveRowId(null) }}>
 
           {/* Hint when no runs */}
           {runs.length === 0 && (
@@ -781,6 +785,7 @@ export default function ScriptPage() {
                   display: 'flex', alignItems: 'flex-start',
                   borderBottom: '1px solid var(--border)',
                   minHeight: isHeading ? 44 : 40,
+                  minWidth: 'max-content',
                   cursor: isHeading ? 'default' : 'pointer',
                   background: isHeading
                     ? 'linear-gradient(90deg, rgba(99,102,241,0.13) 0%, rgba(99,102,241,0.04) 100%)'
@@ -901,7 +906,7 @@ export default function ScriptPage() {
           })}
 
           {/* Add new row input */}
-          <div style={{ display: 'flex', alignItems: 'center', minHeight: 42, borderBottom: '1px solid var(--border-subtle)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', minHeight: 42, borderBottom: '1px solid var(--border-subtle)', minWidth: 'max-content' }}>
             <div style={{ width: 58, padding: '0 10px 0 16px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
               {String(rows.length + 1).padStart(4, '0')}
             </div>
@@ -919,7 +924,8 @@ export default function ScriptPage() {
       {/* ══ RIGHT PANEL (TestPad-style floating) ══ */}
       {panelOpen && (
         <div style={{
-          width: 365,
+          width: 'min(365px, 38vw)',
+          minWidth: 260,
           flexShrink: 0,
           alignSelf: 'flex-start',
           position: 'relative',
