@@ -2,7 +2,7 @@
 import { usePathname } from 'next/navigation'
 import { useSidebar } from '@/components/providers/sidebar-context'
 import { useTheme } from '@/components/providers/theme-provider'
-import { getProjects, getScripts } from '@/lib/store'
+import { peekCache, getProjects as getProjectsDB, getScripts as getScriptsDB, type Project, type Script } from '@/lib/db'
 import { useEffect, useState } from 'react'
 import { LayoutGrid, FolderKanban, Users, Layers, ChevronRight } from 'lucide-react'
 
@@ -21,8 +21,15 @@ export function TopnavContent() {
   useEffect(() => {
     const projMatch = pathname.match(/\/projects\/([^/]+)/)
     if (projMatch) {
-      const proj = getProjects().find(p => p.id === projMatch[1])
-      setProjectName(proj?.name ?? null)
+      const projId = projMatch[1]
+      const cached = peekCache<Project[]>('projects')
+      if (cached) {
+        setProjectName(cached.find(p => p.id === projId)?.name ?? null)
+      } else {
+        getProjectsDB().then(projects => {
+          setProjectName(projects.find(p => p.id === projId)?.name ?? null)
+        }).catch(() => setProjectName(null))
+      }
     } else {
       setProjectName(null)
     }
@@ -30,8 +37,15 @@ export function TopnavContent() {
     if (scriptMatch) {
       const planId = scriptMatch[1]
       const scriptId = scriptMatch[2]
-      const sc = getScripts(planId).find(s => s.id === scriptId)
-      setScriptName(sc?.name ?? null)
+      // Try in-memory cache first (instant, already populated from plan page)
+      const cached = peekCache<Script[]>(`scripts:${planId}`)
+      if (cached) {
+        setScriptName(cached.find(s => s.id === scriptId)?.name ?? null)
+      } else {
+        getScriptsDB(planId).then(scripts => {
+          setScriptName(scripts.find(s => s.id === scriptId)?.name ?? null)
+        }).catch(() => setScriptName(null))
+      }
     } else {
       setScriptName(null)
     }

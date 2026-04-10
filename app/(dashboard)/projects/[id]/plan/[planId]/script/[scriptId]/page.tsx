@@ -1,5 +1,5 @@
 'use client'
-import React, { useEffect, useState, useRef, useCallback, memo } from 'react'
+import React, { useEffect, useState, useRef, useCallback, memo, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useRouter } from 'next/navigation'
 import { FileText } from 'lucide-react'
@@ -145,6 +145,158 @@ const STATUS_ICONS: Record<TestStatus, { icon: string; color: string }> = {
   not_run: { icon: '',  color: 'transparent' },
 }
 
+// ── RowItem ──────────────────────────────────────────────────────────────────
+// Memoized row component — when activeRowId changes, only the 2 affected rows
+// re-render (old active + new active). All other 998 rows skip entirely.
+type RowItemProps = {
+  row: TestRow
+  idx: number
+  runs: TestRun[]
+  isActiveRow: boolean
+  activeRunId: string | null
+  resultsMap: Record<string, Record<string, TestResult>>
+  editingRowId: string | null
+  editTitle: string
+  detailRowId: string | null
+  onContextMenu: (e: React.MouseEvent, rowId: string) => void
+  onRowSelectOnly: (rowId: string) => void
+  onCellClick: (runId: string, rowId: string) => void
+  onOpenDetail: (rowId: string) => void
+  onStartEditing: (rowId: string, title: string) => void
+  onEditTitleChange: (v: string) => void
+  onEditSave: (rowId: string, title: string) => void
+  onEditInsertAbove: (rowId: string, title: string) => void
+  onEditCancel: () => void
+  onMenuIcon: (e: React.MouseEvent, rowId: string) => void
+}
+
+const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId, resultsMap, editingRowId, editTitle, detailRowId, onContextMenu, onRowSelectOnly, onCellClick, onOpenDetail, onStartEditing, onEditTitleChange, onEditSave, onEditInsertAbove, onEditCancel, onMenuIcon }: RowItemProps) {
+  const isHeading = row.type === 'heading'
+  const num = String(idx + 1).padStart(4, '0')
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const isEditing = editingRowId === row.id
+  const isDetailOpen = detailRowId === row.id
+
+  return (
+    <div
+      onContextMenu={e => onContextMenu(e, row.id)}
+      onClick={e => { e.stopPropagation(); if (!isHeading) { if (activeRunId) onCellClick(activeRunId, row.id); else onRowSelectOnly(row.id) } }}
+      style={{
+        display: 'flex', alignItems: 'flex-start',
+        borderBottom: '1px solid var(--border)',
+        minHeight: isHeading ? 44 : 40,
+        minWidth: 'max-content',
+        cursor: isHeading ? 'default' : 'pointer',
+        background: isHeading
+          ? 'linear-gradient(90deg, rgba(99,102,241,0.13) 0%, rgba(99,102,241,0.04) 100%)'
+          : isActiveRow ? 'rgba(99,102,241,0.10)' : 'transparent',
+        borderLeft: isHeading ? '3px solid var(--accent)' : isActiveRow ? '3px solid var(--accent)' : '3px solid transparent',
+        transition: 'none',
+      }}
+      >
+
+      {/* Left spacer — matches run header */}
+      <div style={{ width: 28, flexShrink: 0 }} />
+
+      {/* Row number */}
+      <div style={{ width: 58, padding: '10px 10px 10px 4px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
+        {num}
+      </div>
+
+      {/* Test case icon — left click opens menu */}
+      <div style={{ width: 26, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 11 }}>
+        {!isHeading && (
+          <div
+            onClick={e => onMenuIcon(e, row.id)}
+            style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 3, borderRadius: 4 }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-depth)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >
+            <FileText size={14} color="var(--text-secondary)" strokeWidth={1.5} />
+          </div>
+        )}
+      </div>
+
+      {/* Title + detail trigger */}
+      <div style={{ flex: 1, padding: '10px 14px 10px', minWidth: 0, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        {isEditing ? (
+          <input autoFocus value={editTitle}
+            onChange={e => onEditTitleChange(e.target.value)}
+            onBlur={() => { onEditSave(row.id, editTitle.trim()) }}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); onEditInsertAbove(row.id, editTitle.trim()); return }
+              if (e.key === 'Enter') { onEditSave(row.id, editTitle.trim()) }
+              if (e.key === 'Escape') { onEditCancel() }
+            }}
+            style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: '2px solid var(--accent)', outline: 'none', fontSize: 14, color: 'var(--text-primary)', padding: '2px 0' }} />
+        ) : (
+          <>
+            <span
+              onDoubleClick={() => onStartEditing(row.id, row.title)}
+              style={{
+                fontSize: isHeading ? 15 : 14,
+                fontWeight: isHeading ? 700 : 400,
+                color: isHeading ? 'var(--accent-hover)' : 'var(--text-body)',
+                flex: 1, lineHeight: 1.55,
+                letterSpacing: isHeading ? '0.04em' : 'normal',
+                textTransform: isHeading ? 'uppercase' : 'none',
+                wordBreak: 'break-word',
+                overflowWrap: 'anywhere',
+                whiteSpace: 'normal',
+              }}>
+              {row.title
+                ? (isHeading ? row.title : (row.number ? `${row.number}: ${row.title}` : row.title))
+                : <span style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>Double-click to edit</span>}
+            </span>
+            {!isHeading && (
+              <button
+                onClick={e => { e.stopPropagation(); onOpenDetail(row.id) }}
+                title="Test case details (D)"
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  fontSize: 16, lineHeight: 1, padding: '2px 6px', borderRadius: 4, flexShrink: 0,
+                  color: isDetailOpen ? 'var(--accent)' : 'var(--text-secondary)',
+                  transition: 'color 0.15s',
+                }}
+                onMouseEnter={e => { if (!isDetailOpen) e.currentTarget.style.color = 'var(--text-primary)' }}
+                onMouseLeave={e => { if (!isDetailOpen) e.currentTarget.style.color = 'var(--text-secondary)' }}>
+                ≡
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Result cells per run */}
+      {runs.map(run => {
+        if (isHeading) {
+          return <div key={run.id} style={{ width: 136, alignSelf: 'stretch', borderLeft: '1px solid var(--border-subtle)', flexShrink: 0, background: 'linear-gradient(90deg,rgba(99,102,241,0.06) 0%,transparent 100%)' }} />
+        }
+        const res = resultsMap[run.id]?.[row.id]
+        const st = res?.status && res.status !== 'not_run' ? STATUS_ICONS[res.status] : null
+        const isCellActive = activeRunId === run.id && isActiveRow
+        return (
+          <div key={run.id}
+            onClick={e => { e.stopPropagation(); onCellClick(run.id, row.id) }}
+            style={{
+              width: 136, alignSelf: 'stretch', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderLeft: '1px solid var(--border-subtle)',
+              cursor: 'pointer', flexShrink: 0,
+              background: isCellActive ? 'var(--accent-muted)' : activeRunId === run.id ? 'var(--accent-subtle)' : 'transparent',
+            }}
+            onMouseEnter={e => { if (!isCellActive) e.currentTarget.style.background = 'var(--border-mid)' }}
+            onMouseLeave={e => { if (!isCellActive) e.currentTarget.style.background = isCellActive ? 'var(--accent-muted)' : activeRunId === run.id ? 'var(--accent-subtle)' : 'transparent' }}>
+            {st && <span style={{ fontSize: 18, color: st.color, fontWeight: 700, lineHeight: 1 }}>{st.icon}</span>}
+          </div>
+        )
+      })}
+
+      {/* Spacer for + column */}
+      <div style={{ width: 52, flexShrink: 0 }} />
+    </div>
+  )
+})
+
 export default function ScriptPage() {
   const { id, planId, scriptId } = useParams<{ id: string; planId: string; scriptId: string }>()
   const router = useRouter()
@@ -170,8 +322,13 @@ export default function ScriptPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [activeRowId, setActiveRowId] = useState<string | null>(null)
   const [panelVisible, setPanelVisible] = useState(true)   // can hide/show without losing active run
-  const [panelComment, setPanelComment] = useState('')
-  const [panelBugId, setPanelBugId] = useState('')
+  // Uncontrolled refs for comment/bugId — typing does NOT cause any React re-render (zero lag)
+  const panelCommentRef = useRef<HTMLTextAreaElement>(null)
+  const panelBugIdRef = useRef<HTMLInputElement>(null)
+  const setPanelComment = (v: string) => { if (panelCommentRef.current) panelCommentRef.current.value = v }
+  const setPanelBugId   = (v: string) => { if (panelBugIdRef.current)   panelBugIdRef.current.value   = v }
+  const getPanelComment = () => panelCommentRef.current?.value ?? ''
+  const getPanelBugId   = () => panelBugIdRef.current?.value   ?? ''
 
   // Detail panel state — detail content is managed INSIDE <DetailPanel> to prevent row re-renders on typing
   const [detailRowId, setDetailRowId] = useState<string | null>(null)
@@ -196,6 +353,8 @@ export default function ScriptPage() {
     if (cachedRuns.every(run => !peekCache(`results:${run.id}`))) return null
     return sumStats(cachedRuns.map(run => computeStats(caseRowsCached, cachedMap[run.id])))
   })
+  // Per-run stats — lets us update allRunsStats in O(1) using applyStatusChange instead of O(runs×rows)
+  const [perRunStats, setPerRunStats] = useState<Record<string, Stats>>({})
 
   // Add run modal
   const [addingRun, setAddingRun] = useState(false)
@@ -207,10 +366,16 @@ export default function ScriptPage() {
   const [editTitle, setEditTitle] = useState('')
   const [newTitle, setNewTitle] = useState('')
   const [rowMenu, setRowMenu] = useState<{ x: number; y: number; rowId: string } | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
 
   const addInputRef = useRef<HTMLInputElement>(null)
   const runHeaderRef = useRef<HTMLDivElement>(null)
   const detailCacheRef = useRef<Record<string, TestCaseDetail>>({})
+  // Stable refs so callbacks don't need to be recreated on every render
+  const resultsMapRef = useRef(resultsMap)
+  resultsMapRef.current = resultsMap
+  const detailRowIdRef = useRef(detailRowId)
+  detailRowIdRef.current = detailRowId
   // saveDetailTimerRef lives inside <DetailPanel> now
 
   const reload = useCallback(async (currentActiveRunId?: string | null) => {
@@ -239,8 +404,12 @@ export default function ScriptPage() {
       setTopStats(null)
     }
     if (rns.length > 0) {
-      setAllRunsStats(sumStats(rns.map(run => computeStats(caseRowsLoaded, Object.values(map[run.id] || {})))))
+      const prs: Record<string, Stats> = {}
+      rns.forEach(run => { prs[run.id] = computeStats(caseRowsLoaded, Object.values(map[run.id] || {})) })
+      setPerRunStats(prs)
+      setAllRunsStats(sumStats(Object.values(prs)))
     } else {
+      setPerRunStats({})
       setAllRunsStats(null)
     }
   }, [scriptId, planId])
@@ -266,7 +435,6 @@ export default function ScriptPage() {
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Enter' && e.shiftKey && activeRowId && !editingRowId) {
-        // Make sure we're not inside an input/textarea
         const tag = (e.target as HTMLElement).tagName
         if (tag === 'INPUT' || tag === 'TEXTAREA') return
         e.preventDefault()
@@ -277,7 +445,8 @@ export default function ScriptPage() {
     return () => document.removeEventListener('keydown', handleKey)
   }, [activeRowId, editingRowId])
 
-  const caseRows = rows.filter(r => r.type === 'case')
+
+  const caseRows = useMemo(() => rows.filter(r => r.type === 'case'), [rows])
 
   const startEditingRow = (rowId: string, title: string) => {
     setEditingRowId(rowId)
@@ -354,22 +523,30 @@ export default function ScriptPage() {
 
   // ── Click a cell in the grid ──
   // Now synchronous — DetailPanel handles its own detail fetching when detailRowId changes
+  // Stable — uses refs so deps array is empty and callback never changes
+  const activeRunIdRef = useRef(activeRunId)
+  activeRunIdRef.current = activeRunId
+  const activeRowIdRef = useRef(activeRowId)
+  activeRowIdRef.current = activeRowId
+
   const handleCellClick = useCallback((runId: string, rowId: string) => {
-    setActiveRunId(runId)
+    // Skip all state updates if clicking the already-active row in the same run
+    if (activeRunIdRef.current === runId && activeRowIdRef.current === rowId) return
+    if (activeRunIdRef.current !== runId) setActiveRunId(runId)
     setActiveRowId(rowId)
-    const res = resultsMap[runId]?.[rowId]
+    const res = resultsMapRef.current[runId]?.[rowId]
     setPanelComment(res?.comment || '')
     setPanelBugId(res?.bugId || '')
-    if (detailRowId) setDetailRowId(rowId)  // DetailPanel auto-fetches on rowId change
-  }, [resultsMap, detailRowId])
+    if (detailRowIdRef.current) setDetailRowId(rowId)
+  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel: set status + auto-advance ──
   const handlePanelStatus = (status: TestStatus) => {
     if (!activeRunId || !activeRowId) return
     const runId = activeRunId
     const rowId = activeRowId
-    const comment = panelComment
-    const bugId = panelBugId
+    const comment = getPanelComment()
+    const bugId = getPanelBugId()
     const prevStatus = resultsMap[runId]?.[rowId]?.status
 
     // Build the updated map for local stats computation
@@ -384,10 +561,26 @@ export default function ScriptPage() {
     // 2. Optimistic topStats update — instant, computed locally
     if (topStats) setTopStats(applyStatusChange(topStats, prevStatus, status))
 
-    // 3. Optimistic allRunsStats — computed from updated map, zero queries
-    setAllRunsStats(sumStats(runs.map(run =>
-      computeStats(caseRows, Object.values(updatedMap[run.id] || {}))
-    )))
+    // 3. Optimistic allRunsStats — O(1) delta using perRunStats, no row iteration
+    const oldRunSt = perRunStats[runId]
+    if (oldRunSt && allRunsStats) {
+      const newRunSt = applyStatusChange(oldRunSt, prevStatus, status)
+      setPerRunStats(prev => ({ ...prev, [runId]: newRunSt }))
+      const newAll = { ...allRunsStats,
+        pass: allRunsStats.pass - oldRunSt.pass + newRunSt.pass,
+        fail: allRunsStats.fail - oldRunSt.fail + newRunSt.fail,
+        blocked: allRunsStats.blocked - oldRunSt.blocked + newRunSt.blocked,
+        query: allRunsStats.query - oldRunSt.query + newRunSt.query,
+        exclude: allRunsStats.exclude - oldRunSt.exclude + newRunSt.exclude,
+        done: allRunsStats.done - oldRunSt.done + newRunSt.done,
+        total: allRunsStats.total - oldRunSt.total + newRunSt.total,
+      }
+      newAll.pct = newAll.total > 0 ? Math.round((newAll.pass / newAll.total) * 100) : 0
+      setAllRunsStats(newAll)
+    } else {
+      // Fallback: full recompute (only on first mark before perRunStats is populated)
+      setAllRunsStats(sumStats(runs.map(run => computeStats(caseRows, Object.values(updatedMap[run.id] || {})))))
+    }
 
     // 4. Advance to next case — instant
     const idx = caseRows.findIndex(r => r.id === rowId)
@@ -429,9 +622,9 @@ export default function ScriptPage() {
     if (!existing) return
     setResultsMap(prev => ({
       ...prev,
-      [activeRunId]: { ...prev[activeRunId], [activeRowId]: { ...existing, comment: panelComment, bugId: panelBugId } },
+      [activeRunId]: { ...prev[activeRunId], [activeRowId]: { ...existing, comment: getPanelComment(), bugId: getPanelBugId() } },
     }))
-    setResult(activeRunId, activeRowId, existing.status, panelComment, panelBugId).catch(console.error)
+    setResult(activeRunId, activeRowId, existing.status, getPanelComment(), getPanelBugId()).catch(console.error)
   }
 
   // ── Detail panel — open/close only; content managed inside <DetailPanel> ──
@@ -475,11 +668,65 @@ export default function ScriptPage() {
     updateRow(scriptId, rowId, { type: 'case' }).catch(console.error)
   }
 
-  const activeRow = rows.find(r => r.id === activeRowId)
+  // ── Search ───────────────────────────────────────────────────────────────────
+  const caseRowsRef = useRef(caseRows)
+  caseRowsRef.current = caseRows
+
+  const filteredRows = useMemo(() => {
+    if (!searchQuery.trim()) return rows
+    const q = searchQuery.toLowerCase()
+    return rows.filter(r => r.title.toLowerCase().includes(q) || r.number.toLowerCase().includes(q))
+  }, [rows, searchQuery])
+
+  // ── Stable RowItem callbacks — never recreated, safe for React.memo ──────────
+  const handleRowSelectOnly = useCallback((rowId: string) => setActiveRowId(rowId), [])
+  const openDetailCb = useCallback((rowId: string) => {
+    setDetailRowId(prev => prev === rowId ? null : rowId)
+  }, [])
+  const startEditingRowCb = useCallback((rowId: string, title: string) => {
+    setEditingRowId(rowId); setEditTitle(title)
+  }, [])
+  const handleEditCancelCb = useCallback(() => setEditingRowId(null), [])
+  const handleEditSaveCb = useCallback((rowId: string, title: string) => {
+    if (title) {
+      setRows(prev => prev.map(r => r.id === rowId ? { ...r, title } : r))
+      updateRow(scriptId, rowId, { title }).catch(console.error)
+    }
+    setEditingRowId(null)
+  }, [scriptId])  // eslint-disable-line react-hooks/exhaustive-deps
+  const handleEditInsertAboveCb = useCallback((rowId: string, title: string) => {
+    if (title) {
+      setRows(prev => prev.map(r => r.id === rowId ? { ...r, title } : r))
+      updateRow(scriptId, rowId, { title }).catch(console.error)
+    }
+    insertBlankRowAbove(rowId)
+  }, [scriptId, insertBlankRowAbove])  // eslint-disable-line react-hooks/exhaustive-deps
+  const handleRowCtxCb = useCallback((e: React.MouseEvent, rowId: string) => {
+    e.preventDefault(); e.stopPropagation()
+    const x = Math.min(e.clientX, window.innerWidth - 200 - 8)
+    const y = Math.min(e.clientY, window.innerHeight - 200 - 8)
+    setRowMenu({ x, y, rowId })
+  }, [])
+  const handleMenuIconCb = useCallback((e: React.MouseEvent, rowId: string) => {
+    e.stopPropagation()
+    const x = Math.min(e.clientX, window.innerWidth - 200 - 8)
+    const y = Math.min(e.clientY, window.innerHeight - 200 - 8)
+    setRowMenu({ x, y, rowId })
+  }, [])
+
+  const activeRow = useMemo(() => rows.find(r => r.id === activeRowId), [rows, activeRowId])
   const activeResult = activeRunId && activeRowId ? resultsMap[activeRunId]?.[activeRowId] : undefined
   const panelOpen = !!activeRunId && panelVisible
-  const activeRun = runs.find(r => r.id === activeRunId) ?? null
+  const activeRun = useMemo(() => runs.find(r => r.id === activeRunId) ?? null, [runs, activeRunId])
   const runIsCompleted = activeRun?.status === 'completed'
+  // Pre-compute per-run stats once per render — used by both header and PDF
+  const runHeaderStatsMap = useMemo(() => {
+    const m: Record<string, Stats> = {}
+    for (const run of runs) {
+      m[run.id] = computeStats(caseRows, Object.values(resultsMap[run.id] || {}))
+    }
+    return m
+  }, [runs, caseRows, resultsMap])
 
   const markRunCompleted = () => {
     if (!activeRunId) return
@@ -511,7 +758,7 @@ export default function ScriptPage() {
     }
     const sLabel: Record<string, string> = {
       pass: 'PASS', fail: 'FAIL', blocked: 'BLOCKED',
-      query: 'QUERY', exclude: 'EXCL', not_run: '—',
+      query: 'QUERY', exclude: 'EXCL', not_run: '-',
     }
 
     const tW = pageW - margin * 2 // usable table width
@@ -522,7 +769,7 @@ export default function ScriptPage() {
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(7)
       doc.setTextColor(140, 145, 155)
-      doc.text(`Testra  ·  ${script?.name || ''}`, margin, pageH - 18)
+      doc.text(`Testra  -  ${safeScriptName}`, margin, pageH - 18)
       doc.text(`Page ${pageNum} of ${total}`, pageW - margin, pageH - 18, { align: 'right' })
     }
 
@@ -552,12 +799,15 @@ export default function ScriptPage() {
     // Meta line
     doc.setFontSize(9)
     doc.setTextColor(130, 138, 150)
-    const meta = `Script: ${script?.name || ''}   ·   ${runs.length} Run${runs.length > 1 ? 's' : ''}   ·   ${new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' })}  ${new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true })}`
+    const safeScriptName = (script?.name || '').replace(/[^\x20-\x7E]/g, '')
+    const dateStr = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/[^\x20-\x7E]/g, '')
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true }).replace(/[^\x20-\x7E]/g, '')
+    const meta = `Script: ${safeScriptName}   -   ${runs.length} Run${runs.length > 1 ? 's' : ''}   -   ${dateStr}  ${timeStr}`
     doc.text(meta, margin, 55)
     y = 90
 
     // ── OVERALL STATS STRIP ──
-    const allSt = sumStats(runs.map(run => computeStats(caseRows, Object.values(resultsMap[run.id] || {}))))
+    const allSt = sumStats(runs.map(run => runHeaderStatsMap[run.id] ?? computeStats(caseRows, Object.values(resultsMap[run.id] || {}))))
     if (allSt.total > 0) {
       // Green-tinted strip
       doc.setFillColor(240, 253, 244)
@@ -616,9 +866,8 @@ export default function ScriptPage() {
     summaryHeaders.forEach((h, i) => { doc.text(h, summaryX(i) + 5, y + 14) })
     y += 20
 
-    // Precompute per-run stats for PDF from already-loaded state — zero extra queries
-    const runStatsMap: Record<string, Stats> = {}
-    for (const run of runs) { runStatsMap[run.id] = computeStats(caseRows, Object.values(resultsMap[run.id] || {})) }
+    // Use already-computed run stats — zero extra work
+    const runStatsMap = runHeaderStatsMap
 
     let totPass = 0, totFail = 0, totBlocked = 0, totQuery = 0
     runs.forEach((run, idx) => {
@@ -653,7 +902,7 @@ export default function ScriptPage() {
       }
 
       const cells = [
-        `#${run.number}`, run.tester, `${run.date} · ${run.time}`,
+        `#${run.number}`, run.tester.replace(/[^\x20-\x7E]/g, ''), `${run.date} - ${run.time}`,
         String(st.pass), String(st.fail), String(st.blocked), String(st.query), `${st.pct}%`
       ]
       cells.forEach((cell, i) => {
@@ -748,9 +997,8 @@ export default function ScriptPage() {
       const lineH = 13
       const rowH = Math.max(20, titleLines.length * lineH + 6)
 
-      // Page break check with actual row height
+      // Page break check with actual row height — footer added in final pass
       if (y + rowH > pageH - 50) {
-        addFooter(doc.getNumberOfPages(), doc.getNumberOfPages() + 1)
         doc.addPage()
         y = margin
       }
@@ -859,7 +1107,20 @@ export default function ScriptPage() {
               <span style={{ fontSize:11, color:'var(--text-secondary)', fontWeight:600 }}>{allRunsStats.done}/{allRunsStats.total} <span style={{ fontWeight:400, color:'var(--text-muted)' }}>{allRunsStats.pct}%</span></span>
             </div>
           )}
-          <div style={{ flex: 1 }} />
+          {/* Search */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-depth)', border: '1px solid var(--border)', borderRadius: 7, padding: '4px 10px', marginLeft: 'auto' }}>
+            <span style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1 }}>⌕</span>
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search cases..."
+              style={{ background: 'none', border: 'none', outline: 'none', fontSize: 12.5, color: 'var(--text-body)', width: 150, minWidth: 80 }}
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)', padding: 0, lineHeight: 1 }}>✕</button>
+            )}
+          </div>
           {runs.length > 0 && (
             <button onClick={generatePDF}
               style={{
@@ -904,7 +1165,8 @@ export default function ScriptPage() {
 
         {/* Run column headers — only shown when runs exist */}
         {runs.length > 0 && <div ref={runHeaderRef} style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)', overflowX: 'hidden' }}>
-          {/* Spacer must match test-case row left section exactly: 58px (num) + 26px (icon) + flex:1 (title) */}
+          {/* Spacer must match test-case row left section exactly: 28px + 58px (num) + 26px (icon) + flex:1 (title) */}
+          <div style={{ width: 28, flexShrink: 0 }} />
           <div style={{ width: 58, flexShrink: 0 }} />
           <div style={{ width: 26, flexShrink: 0 }} />
           <div style={{ flex: 1, minWidth: 0 }} />
@@ -913,7 +1175,7 @@ export default function ScriptPage() {
           <div style={{ display: 'flex', flexShrink: 0 }}>
             {runs.map(run => {
               const isActive = activeRunId === run.id
-              const st = computeStats(caseRows, Object.values(resultsMap[run.id] || {}))
+              const st = runHeaderStatsMap[run.id] ?? computeStats(caseRows, Object.values(resultsMap[run.id] || {}))
               return (
                 <div key={run.id}
                   onClick={() => handleSelectRun(run.id)}
@@ -993,142 +1255,40 @@ export default function ScriptPage() {
             </div>
           )}
 
-          {rows.map((row, idx) => {
-            const isHeading = row.type === 'heading'
-            const isActiveRow = activeRowId === row.id
-            const num = String(idx + 1).padStart(4, '0')
-
-            return (
-              <div key={row.id}
-                onContextMenu={e => handleRowCtx(e, row.id)}
-                onClick={e => { e.stopPropagation(); if (!isHeading) { if (activeRunId) handleCellClick(activeRunId, row.id); else setActiveRowId(row.id) } }}
-                style={{
-                  display: 'flex', alignItems: 'flex-start',
-                  borderBottom: '1px solid var(--border)',
-                  minHeight: isHeading ? 44 : 40,
-                  minWidth: 'max-content',
-                  cursor: isHeading ? 'default' : 'pointer',
-                  background: isHeading
-                    ? 'linear-gradient(90deg, rgba(99,102,241,0.13) 0%, rgba(99,102,241,0.04) 100%)'
-                    : isActiveRow ? 'rgba(99,102,241,0.10)' : 'transparent',
-                  borderLeft: isHeading ? '3px solid var(--accent)' : isActiveRow ? '3px solid var(--accent)' : '3px solid transparent',
-                  transition: 'background 0.12s, border-color 0.12s',
-                }}
-                onMouseEnter={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'rgba(99,102,241,0.05)' }}
-                onMouseLeave={e => { if (!isActiveRow && !isHeading) e.currentTarget.style.background = 'transparent'; else if (isActiveRow) e.currentTarget.style.background = 'rgba(99,102,241,0.10)' }}>
-
-                {/* Row number */}
-                <div style={{ width: 58, padding: '10px 10px 10px 16px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
-                  {num}
-                </div>
-
-                {/* Test case icon — left click opens menu */}
-                <div style={{ width: 26, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 11 }}>
-                  {!isHeading && (
-                    <div
-                      onClick={e => { e.stopPropagation(); const x=Math.min(e.clientX,window.innerWidth-200-8); const y=Math.min(e.clientY,window.innerHeight-200-8); setRowMenu({ x, y, rowId: row.id }) }}
-                      style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 3, borderRadius: 4 }}
-                      onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-depth)')}
-                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                    >
-                      <FileText size={14} color="var(--text-secondary)" strokeWidth={1.5} />
-                    </div>
-                  )}
-                </div>
-
-                {/* Title + detail trigger */}
-                <div style={{ flex: 1, padding: '10px 14px 10px', minWidth: 0, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                  {editingRowId === row.id ? (
-                    <input autoFocus value={editTitle}
-                      onChange={e => setEditTitle(e.target.value)}
-                      onBlur={async () => { if (editTitle.trim()) await updateRow(scriptId, row.id, { title: editTitle.trim() }); setEditingRowId(null); reload(activeRunId) }}
-                      onKeyDown={async e => {
-                        if (e.key === 'Enter' && e.shiftKey) {
-                          e.preventDefault()
-                          if (editTitle.trim()) await updateRow(scriptId, row.id, { title: editTitle.trim() })
-                          insertBlankRowAbove(row.id)
-                          return
-                        }
-                        if (e.key === 'Enter') {
-                          if (editTitle.trim()) await updateRow(scriptId, row.id, { title: editTitle.trim() })
-                          setEditingRowId(null)
-                          reload(activeRunId)
-                        }
-                        if (e.key === 'Escape') setEditingRowId(null)
-                      }}
-                      style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: '2px solid var(--accent)', outline: 'none', fontSize: 14, color: 'var(--text-primary)', padding: '2px 0' }} />
-                  ) : (
-                    <>
-                      <span
-                        onDoubleClick={() => startEditingRow(row.id, row.title)}
-                        style={{
-                          fontSize: isHeading ? 15 : 14,
-                          fontWeight: isHeading ? 700 : 400,
-                          color: isHeading ? 'var(--accent-hover)' : 'var(--text-body)',
-                          flex: 1, lineHeight: 1.55,
-                          letterSpacing: isHeading ? '0.04em' : 'normal',
-                          textTransform: isHeading ? 'uppercase' : 'none',
-                          wordBreak: 'break-word',
-                          overflowWrap: 'anywhere',
-                          whiteSpace: 'normal',
-                        }}>
-                        {row.title
-                          ? (isHeading ? row.title : (row.number ? `${row.number}: ${row.title}` : row.title))
-                          : <span style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>Double-click to edit</span>}
-                      </span>
-                      {!isHeading && (
-                        <button
-                          onClick={e => { e.stopPropagation(); openDetail(row.id) }}
-                          title="Test case details (D)"
-                          style={{
-                            background: 'none', border: 'none', cursor: 'pointer',
-                            fontSize: 16, lineHeight: 1, padding: '2px 6px', borderRadius: 4, flexShrink: 0,
-                            color: detailRowId === row.id ? 'var(--accent)' : 'var(--text-secondary)',
-                            transition: 'color 0.15s',
-                          }}
-                          onMouseEnter={e => { if (detailRowId !== row.id) e.currentTarget.style.color = 'var(--text-primary)' }}
-                          onMouseLeave={e => { if (detailRowId !== row.id) e.currentTarget.style.color = 'var(--text-secondary)' }}>
-                          ≡
-                        </button>
-                      )}
-                    </>
-                  )}
-                </div>
-
-                {/* Result cells per run */}
-                {runs.map(run => {
-                  if (isHeading) {
-                    return <div key={run.id} style={{ width: 136, alignSelf: 'stretch', borderLeft: '1px solid var(--border-subtle)', flexShrink: 0, background: 'linear-gradient(90deg,rgba(99,102,241,0.06) 0%,transparent 100%)' }} />
-                  }
-                  const res = resultsMap[run.id]?.[row.id]
-                  const st = res?.status && res.status !== 'not_run' ? STATUS_ICONS[res.status] : null
-                  const isCellActive = activeRunId === run.id && activeRowId === row.id
-                  return (
-                    <div key={run.id}
-                      onClick={e => { e.stopPropagation(); handleCellClick(run.id, row.id) }}
-                      style={{
-                        width: 136, alignSelf: 'stretch', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        borderLeft: '1px solid var(--border-subtle)',
-                        cursor: 'pointer', flexShrink: 0,
-                        background: isCellActive ? 'var(--accent-muted)' : activeRunId === run.id ? 'var(--accent-subtle)' : 'transparent',
-                        transition: 'background 0.1s',
-                      }}
-                      onMouseEnter={e => { if (!isCellActive) e.currentTarget.style.background = 'var(--border-mid)' }}
-                      onMouseLeave={e => { if (!isCellActive) e.currentTarget.style.background = isCellActive ? 'var(--accent-muted)' : activeRunId === run.id ? 'var(--accent-subtle)' : 'transparent' }}>
-                      {st && <span style={{ fontSize: 18, color: st.color, fontWeight: 700, lineHeight: 1 }}>{st.icon}</span>}
-                    </div>
-                  )
-                })}
-
-                {/* Spacer for + column */}
-                <div style={{ width: 52, flexShrink: 0 }} />
-              </div>
-            )
-          })}
+          {searchQuery && filteredRows.length === 0 && (
+            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+              No test cases match "{searchQuery}"
+            </div>
+          )}
+          {filteredRows.map((row, idx) => (
+            <RowItem
+              key={row.id}
+              row={row}
+              idx={idx}
+              runs={runs}
+              isActiveRow={activeRowId === row.id}
+              activeRunId={activeRunId}
+              resultsMap={resultsMap}
+              editingRowId={editingRowId}
+              editTitle={editTitle}
+              detailRowId={detailRowId}
+              onContextMenu={handleRowCtxCb}
+              onRowSelectOnly={handleRowSelectOnly}
+              onCellClick={handleCellClick}
+              onOpenDetail={openDetailCb}
+              onStartEditing={startEditingRowCb}
+              onEditTitleChange={setEditTitle}
+              onEditSave={handleEditSaveCb}
+              onEditInsertAbove={handleEditInsertAboveCb}
+              onEditCancel={handleEditCancelCb}
+              onMenuIcon={handleMenuIconCb}
+            />
+          ))}
 
           {/* Add new row input */}
           <div style={{ display: 'flex', alignItems: 'center', minHeight: 42, borderBottom: '1px solid var(--border-subtle)', minWidth: 'max-content' }}>
-            <div style={{ width: 58, padding: '0 10px 0 16px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
+            <div style={{ width: 28, flexShrink: 0 }} />
+            <div style={{ width: 58, padding: '0 10px 0 4px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
               {String(rows.length + 1).padStart(4, '0')}
             </div>
             <div style={{ width: 26, flexShrink: 0 }} />
@@ -1279,7 +1439,7 @@ export default function ScriptPage() {
                 {/* Comments */}
                 <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
                   <label style={{ fontSize:10, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6, display:'block' }}>COMMENTS</label>
-                  <textarea value={panelComment} onChange={e => setPanelComment(e.target.value)} onBlur={savePanelNote}
+                  <textarea ref={panelCommentRef} onBlur={savePanelNote}
                     placeholder="Add observations or notes for this test case..."
                     rows={3}
                     style={{ width:'100%', padding:'7px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:6, fontSize:12, color:'var(--text-body)', resize:'none', outline:'none', fontFamily:'inherit', boxSizing:'border-box' }} />
@@ -1288,7 +1448,7 @@ export default function ScriptPage() {
                 {/* Bug tracking */}
                 <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
                   <label style={{ display:'block', fontSize:10, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>BUG TRACKING</label>
-                  <input value={panelBugId} onChange={e => setPanelBugId(e.target.value)} onBlur={savePanelNote}
+                  <input ref={panelBugIdRef} onBlur={savePanelNote}
                     placeholder="Bug ID or ticket reference (e.g. BUG-123)"
                     style={{ width:'100%', padding:'7px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:6, fontSize:12, color:'var(--text-body)', outline:'none', boxSizing:'border-box' }} />
                 </div>
@@ -1321,8 +1481,20 @@ export default function ScriptPage() {
                     <button
                       onClick={() => {
                         if (!activeRunId || !activeRowId) return
-                        setResult(activeRunId, activeRowId, 'not_run', panelComment, panelBugId)
-                        reload()
+                        const runId = activeRunId
+                        const rowId = activeRowId
+                        const prevStatus = resultsMap[runId]?.[rowId]?.status
+                        // 1. Build updated map with entry removed
+                        const updatedMap = { ...resultsMap, [runId]: { ...resultsMap[runId] } }
+                        delete updatedMap[runId][rowId]
+                        // 2. Optimistic UI — instant, no reload
+                        setResultsMap(updatedMap)
+                        if (topStats) setTopStats(applyStatusChange(topStats, prevStatus, 'not_run'))
+                        setAllRunsStats(sumStats(runs.map(run =>
+                          computeStats(caseRows, Object.values(updatedMap[run.id] || {}))
+                        )))
+                        // 3. Persist in background
+                        setResult(runId, rowId, 'not_run', getPanelComment(), getPanelBugId()).catch(console.error)
                       }}
                       style={{ width:'100%', padding:'8px', background:'var(--bg-depth)', color:'#ef4444', border:'1px solid rgba(239,68,68,0.3)', borderRadius:7, fontSize:11, fontWeight:700, cursor:'pointer', letterSpacing:'0.04em', transition:'all 0.13s' }}
                       onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.08)'; e.currentTarget.style.borderColor='rgba(239,68,68,0.6)' }}
