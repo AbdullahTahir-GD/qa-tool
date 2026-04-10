@@ -87,9 +87,9 @@ export default function PlanPage() {
   const [runs, setRuns] = useState<TestRun[]>(() => peekCache<TestRun[]>(`runs:${planId}`) ?? [])
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [toast, setToast] = useState<string | null>(null)
-  const [folderStats, setFolderStats] = useState<Record<string, { pass:number; fail:number; blocked:number; query:number; done:number; total:number; pct:number }>>({})
-  const [scriptStats, setScriptStats] = useState<Record<string, { pass:number; fail:number; blocked:number; query:number; done:number; total:number; pct:number }>>({})
-  const [planStats, setPlanStats] = useState<{ pass:number; fail:number; blocked:number; query:number; done:number; total:number; pct:number } | null>(null)
+  const [folderStats, setFolderStats] = useState<Record<string, Stats>>({})
+  const [scriptStats, setScriptStats] = useState<Record<string, Stats>>({})
+  const [planStats, setPlanStats] = useState<Stats | null>(null)
 
   // context menus
   const [folderMenu, setFolderMenu] = useState<{ x:number; y:number; folderId:string } | null>(null)
