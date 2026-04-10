@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { saveProject, savePlan } from '@/lib/store'
+import { saveProject, savePlan } from '@/lib/db'
 
 // Module-level lock — immune to React re-renders and Strict Mode
 let _submitting = false
@@ -38,13 +38,13 @@ export default function NewProjectPage() {
 
   const canCreate = name.trim().length > 0 || (inputRef.current?.value.trim().length ?? 0) > 0
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     const actualName = inputRef.current?.value.trim() || name.trim()
     if (!actualName || _submitting) return
     _submitting = true
     setCreating(true)
-    const p = saveProject(actualName)
-    const plan = savePlan(p.id, actualName + ' - Test Plan')
+    const p = await saveProject(actualName)
+    const plan = await savePlan(p.id, actualName + ' - Test Plan')
     router.push(`/projects/${p.id}/plan/${plan.id}`)
   }
 

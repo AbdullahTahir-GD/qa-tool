@@ -1,8 +1,8 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useRouter, usePathname } from 'next/navigation'
-import { getProjects, getPlans, deleteProject, type Project } from '@/lib/store'
+import { getProjects, getPlans, getFolders, getScripts, getTestRuns, deleteProject, type Project } from '@/lib/db'
 import { FolderKanban, Plus, HelpCircle, X } from 'lucide-react'
 import { useSidebar } from '@/components/providers/sidebar-context'
 
@@ -14,20 +14,37 @@ export function SidebarContent() {
   const pathname = usePathname()
   const { isMobile, close } = useSidebar()
 
-  const refresh = () => setProjects(getProjects())
-  useEffect(() => { refresh() }, [pathname])
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const prefetchProject = useCallback((projectId: string) => {
+    // Populate cache before user clicks — makes navigation instant
+    getPlans(projectId).then(plans => {
+      if (plans.length === 0) return
+      const planId = plans[0].id
+      Promise.all([getFolders(planId), getScripts(planId), getTestRuns(planId)]).catch(() => {})
+    }).catch(() => {})
+  }, [])
+
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const refresh = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+    refreshTimerRef.current = setTimeout(async () => {
+      setProjects(await getProjects())
+    }, 80)
+  }, [])
+
+  useEffect(() => { refresh() }, [pathname, refresh])
   useEffect(() => {
     window.addEventListener('qaflow:change', refresh)
     return () => window.removeEventListener('qaflow:change', refresh)
-  }, [])
+  }, [refresh])
   useEffect(() => {
     const close = () => setCtxMenu(null)
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [])
 
-  const handleDeleteProject = (projectId: string) => {
-    deleteProject(projectId)
+  const handleDeleteProject = async (projectId: string) => {
+    await deleteProject(projectId)
     setCtxMenu(null)
     refresh()
     if (pathname.includes('/projects/' + projectId)) router.push('/projects')
@@ -135,12 +152,12 @@ export function SidebarContent() {
 
         {/* Project items */}
         {projects.map(p => {
-          const plans    = getPlans(p.id)
           const isActive = pathname.includes('/projects/' + p.id)
           return (
             <div
               key={p.id}
-              onClick={() => {
+              onClick={async () => {
+                const plans = await getPlans(p.id)
                 if (plans.length >= 1) router.push(`/projects/${p.id}/plan/${plans[0].id}`)
                 else router.push('/projects/' + p.id)
                 if (isMobile) close()
@@ -167,12 +184,16 @@ export function SidebarContent() {
                   e.currentTarget.style.background = 'rgba(255,255,255,0.055)'
                   e.currentTarget.style.color = 'rgba(255,255,255,0.88)'
                 }
+                // Prefetch after 150ms hover to warm cache before click
+                if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current)
+                prefetchTimerRef.current = setTimeout(() => prefetchProject(p.id), 150)
               }}
               onMouseLeave={e => {
                 if (!isActive) {
                   e.currentTarget.style.background = 'transparent'
                   e.currentTarget.style.color = 'rgba(255,255,255,0.58)'
                 }
+                if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current)
               }}
               title={p.name}
             >
@@ -220,7 +241,7 @@ export function SidebarContent() {
         display: 'flex', alignItems: 'center', gap: 8,
       }}>
         <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 6px rgba(34,197,94,0.8)', flexShrink: 0 }} />
-        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.22)', letterSpacing: '0.04em', flex: 1 }}>Testra v1.0 · Local</span>
+        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.22)', letterSpacing: '0.04em', flex: 1 }}>Testra v1.0 · Cloud</span>
         <button
           onClick={() => setShowHelp(true)}
           title="How to use Testra"

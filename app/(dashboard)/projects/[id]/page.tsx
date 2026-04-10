@@ -1,28 +1,41 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { getProjects, getPlans, getScripts, getTestRuns, savePlan, type Project, type TestPlan } from '@/lib/store'
+import { getProjects, getPlans, getScripts, getTestRuns, savePlan, type Project, type TestPlan } from '@/lib/db'
 import { Plus, ClipboardList, ChevronRight } from 'lucide-react'
+
+interface PlanMeta { scriptCount: number; runCount: number }
 
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const [project, setProject] = useState<Project | null>(null)
   const [plans, setPlans] = useState<TestPlan[]>([])
+  const [planMeta, setPlanMeta] = useState<Record<string, PlanMeta>>({})
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
 
-  useEffect(() => {
-    const p = getProjects().find(x => x.id === id)
+  async function load() {
+    const projects = await getProjects()
+    const p = projects.find(x => x.id === id)
     if (!p) { router.push('/projects'); return }
     setProject(p)
-    setPlans(getPlans(id))
-  }, [id])
+    const pl = await getPlans(id)
+    setPlans(pl)
+    const meta: Record<string, PlanMeta> = {}
+    for (const plan of pl) {
+      const [scripts, runs] = await Promise.all([getScripts(plan.id), getTestRuns(plan.id)])
+      meta[plan.id] = { scriptCount: scripts.length, runCount: runs.length }
+    }
+    setPlanMeta(meta)
+  }
 
-  const handleCreate = (e: React.FormEvent) => {
+  useEffect(() => { load() }, [id])
+
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
-    const plan = savePlan(id, name.trim())
+    const plan = await savePlan(id, name.trim())
     router.push(`/projects/${id}/plan/${plan.id}`)
   }
 
@@ -86,8 +99,7 @@ export default function ProjectPage() {
       {plans.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {plans.map(p => {
-            const scripts = getScripts(p.id)
-            const runs = getTestRuns(p.id)
+            const meta = planMeta[p.id] ?? { scriptCount: 0, runCount: 0 }
             return (
               <div key={p.id}
                 onClick={() => router.push(`/projects/${id}/plan/${p.id}`)}
@@ -111,8 +123,8 @@ export default function ProjectPage() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
                   <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
-                    {scripts.length} script{scripts.length !== 1 ? 's' : ''}
-                    {runs.length > 0 && <> · {runs.length} run{runs.length !== 1 ? 's' : ''}</>}
+                    {meta.scriptCount} script{meta.scriptCount !== 1 ? 's' : ''}
+                    {meta.runCount > 0 && <> · {meta.runCount} run{meta.runCount !== 1 ? 's' : ''}</>}
                   </div>
                 </div>
                 <ChevronRight size={16} color="var(--text-dim)" strokeWidth={2} />

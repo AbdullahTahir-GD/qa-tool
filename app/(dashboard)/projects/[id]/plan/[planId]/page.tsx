@@ -1,13 +1,15 @@
 'use client'
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useRouter } from 'next/navigation'
 import {
   getProjects, getPlans, getFolders, saveFolder, deleteFolder, updateFolder,
-  getScripts, saveScript, deleteScript, duplicateScript, duplicateFolder, getTestRuns,
-  getScriptStats, getScriptStatsAllRuns, getFolderStatsAllRuns,
-  type Project, type TestPlan, type Folder, type Script, type TestRun
-} from '@/lib/store'
+  getScripts, saveScript, deleteScript, duplicateScript, duplicateFolder,
+  getTestRuns, getRows, getResults, computeStats, sumStats, peekCache,
+  type Project, type TestPlan, type Folder, type Script, type TestRun, type TestRow, type TestResult, type Stats
+} from '@/lib/db'
+
+function zeroStats(): Stats { return { pass:0, fail:0, blocked:0, query:0, exclude:0, done:0, total:0, pct:0 } }
 import { Home, ChevronDown, ChevronRight, Plus, FolderOpen, FileText } from 'lucide-react'
 
 const C = { pass:'#22c55e', fail:'#ef4444', blocked:'#f59e0b', query:'#a78bfa' }
@@ -60,7 +62,8 @@ function StatBlock({ pass, fail, blocked, query, done, total, pct }:
 
 // Simple toast
 function Toast({ msg, onDone }: { msg: string; onDone: () => void }) {
-  useEffect(() => { const t = setTimeout(onDone, 2400); return () => clearTimeout(t) }, [onDone])
+  const duration = msg.endsWith('…') ? 60_000 : 2400 // keep "working" toasts until replaced
+  useEffect(() => { const t = setTimeout(onDone, duration); return () => clearTimeout(t) }, [onDone, duration])
   return createPortal(
     <div style={{
       position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)',
@@ -79,11 +82,14 @@ export default function PlanPage() {
   const router = useRouter()
   const [project, setProject] = useState<Project | null>(null)
   const [plan, setPlan] = useState<TestPlan | null>(null)
-  const [folders, setFolders] = useState<Folder[]>([])
-  const [scripts, setScripts] = useState<Script[]>([])
-  const [runs, setRuns] = useState<TestRun[]>([])
+  const [folders, setFolders] = useState<Folder[]>(() => peekCache<Folder[]>(`folders:${planId}`) ?? [])
+  const [scripts, setScripts] = useState<Script[]>(() => peekCache<Script[]>(`scripts:${planId}`) ?? [])
+  const [runs, setRuns] = useState<TestRun[]>(() => peekCache<TestRun[]>(`runs:${planId}`) ?? [])
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [toast, setToast] = useState<string | null>(null)
+  const [folderStats, setFolderStats] = useState<Record<string, { pass:number; fail:number; blocked:number; query:number; done:number; total:number; pct:number }>>({})
+  const [scriptStats, setScriptStats] = useState<Record<string, { pass:number; fail:number; blocked:number; query:number; done:number; total:number; pct:number }>>({})
+  const [planStats, setPlanStats] = useState<{ pass:number; fail:number; blocked:number; query:number; done:number; total:number; pct:number } | null>(null)
 
   // context menus
   const [folderMenu, setFolderMenu] = useState<{ x:number; y:number; folderId:string } | null>(null)
@@ -109,23 +115,104 @@ export default function PlanPage() {
     setToast(msg)
   }, [])
 
-  const reload = useCallback(() => {
-    setFolders(getFolders(planId))
-    setScripts(getScripts(planId))
-    setRuns(getTestRuns(planId))
+  // Guard against concurrent reload calls (e.g. from notify() + explicit reload)
+  const reloadingRef = useRef(false)
+
+  // Lightweight post-duplication refresh — uses cached rows, no row re-fetching
+  // Called instead of full reload() after duplicateScript / duplicateFolder
+  const refreshAfterDuplicate = useCallback(async (currentScriptStats: Record<string, Stats>, currentRuns: TestRun[]) => {
+    const [newFolders, newScripts] = await Promise.all([getFolders(planId), getScripts(planId)])
+    setFolders(newFolders)
+    setScripts(newScripts)
+
+    const newSStats: Record<string, Stats> = {}
+    for (const sc of newScripts) {
+      if (currentScriptStats[sc.id]) {
+        // Existing script — keep its already-computed stats
+        newSStats[sc.id] = currentScriptStats[sc.id]
+      } else {
+        // New script — rows are pre-populated in cache by _dupScript; no results yet
+        const cachedRows = peekCache<TestRow[]>(`rows:${sc.id}`) ?? []
+        const caseRowsSc = cachedRows.filter(rw => rw.type === 'case')
+        if (currentRuns.length === 0) {
+          newSStats[sc.id] = { ...zeroStats(), total: caseRowsSc.length }
+        } else {
+          newSStats[sc.id] = sumStats(currentRuns.map(() => computeStats(caseRowsSc, [])))
+        }
+      }
+    }
+
+    const fStats: Record<string, Stats> = {}
+    for (const folder of newFolders) {
+      const fs = newScripts.filter(sc => sc.folderId === folder.id)
+      fStats[folder.id] = sumStats(fs.map(sc => newSStats[sc.id] ?? zeroStats()))
+    }
+
+    setScriptStats(newSStats)
+    setFolderStats(fStats)
+    setPlanStats(Object.keys(fStats).length > 0 ? sumStats(Object.values(fStats)) : null)
+  }, [planId])
+
+  const reload = useCallback(async () => {
+    if (reloadingRef.current) return   // skip if already reloading
+    reloadingRef.current = true
+    try {
+    const [f, s, r] = await Promise.all([getFolders(planId), getScripts(planId), getTestRuns(planId)])
+    setFolders(f); setScripts(s); setRuns(r)
+
+    if (r.length === 0) {
+      setFolderStats({}); setScriptStats({}); setPlanStats(null)
+      return
+    }
+
+    // Fetch all rows + all results in parallel — two batches instead of N*M sequential queries
+    const [allRowsList, allResultsList] = await Promise.all([
+      Promise.all(s.map(sc => getRows(sc.id))),
+      Promise.all(r.map(run => getResults(run.id))),
+    ])
+    const scriptRowsMap: Record<string, TestRow[]> = {}
+    s.forEach((sc, i) => { scriptRowsMap[sc.id] = allRowsList[i] })
+    const runResultsMap: Record<string, TestResult[]> = {}
+    r.forEach((run, i) => { runResultsMap[run.id] = allResultsList[i] })
+
+    // Compute all script stats locally — zero extra queries
+    const sStats: Record<string, Stats> = {}
+    for (const sc of s) {
+      const caseRowsSc = scriptRowsMap[sc.id].filter(rw => rw.type === 'case')
+      sStats[sc.id] = sumStats(r.map(run => computeStats(caseRowsSc, runResultsMap[run.id])))
+    }
+
+    // Compute folder stats by summing their scripts — zero extra queries
+    const fStats: Record<string, Stats> = {}
+    for (const folder of f) {
+      const folderScripts = s.filter(sc => sc.folderId === folder.id)
+      fStats[folder.id] = sumStats(folderScripts.map(sc => sStats[sc.id] ?? zeroStats()))
+    }
+
+    setScriptStats(sStats); setFolderStats(fStats)
+    setPlanStats(sumStats(Object.values(fStats)))
+    } finally { reloadingRef.current = false }
   }, [planId])
 
   useEffect(() => {
-    const proj = getProjects().find(p => p.id === id)
-    const pl = getPlans(id).find(p => p.id === planId)
-    if (!proj || !pl) { router.push('/projects'); return }
-    setProject(proj); setPlan(pl)
-    reload()
+    async function load() {
+      // Fire all 5 fetches in parallel — projects/plans/folders/scripts/runs in one batch
+      const [projects, plans] = await Promise.all([
+        getProjects(), getPlans(id),
+        reload(), // data load runs in parallel with the project check
+      ])
+      const proj = projects.find(p => p.id === id)
+      const pl = plans.find(p => p.id === planId)
+      if (!proj || !pl) { router.push('/projects'); return }
+      setProject(proj); setPlan(pl)
+    }
+    load()
   }, [id, planId, reload])
 
   useEffect(() => {
-    window.addEventListener('qaflow:change', reload)
-    return () => window.removeEventListener('qaflow:change', reload)
+    const handler = () => { reload() }
+    window.addEventListener('qaflow:change', handler)
+    return () => window.removeEventListener('qaflow:change', handler)
   }, [reload])
 
   useEffect(() => {
@@ -162,33 +249,23 @@ export default function PlanPage() {
     if (collapsed.has(folderId)) setCollapsed(prev => { const n=new Set(prev); n.delete(folderId); return n })
   }
 
-  const handleSaveScript = (e: React.FormEvent, folderId: string) => {
+  const handleSaveScript = async (e: React.FormEvent, folderId: string) => {
     e.preventDefault()
     if (!newScriptName.trim()) { setAddingScriptInFolder(null); return }
-    saveScript(planId, folderId, newScriptName.trim())
+    await saveScript(planId, folderId, newScriptName.trim(), '', scripts.length)
     setNewScriptName(''); setAddingScriptInFolder(null); reload()
   }
 
-  const handleAddFolder = (e: React.FormEvent) => {
+  const handleAddFolder = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newFolderName.trim()) { setAddingFolder(false); return }
-    saveFolder(planId, newFolderName.trim())
+    await saveFolder(planId, newFolderName.trim(), folders.length)
     setNewFolderName(''); setAddingFolder(false); reload()
   }
 
   const hasFolders = folders.length > 0
 
-  // Overall stats across ALL runs (best status per test case)
-  const planStats = useMemo(() => {
-    if (runs.length === 0) return null
-    let pass=0,fail=0,blocked=0,query=0,done=0,total=0
-    folders.forEach(f => {
-      const st = getFolderStatsAllRuns(planId, f.id)
-      pass+=st.pass; fail+=st.fail; blocked+=st.blocked; query+=st.query; done+=st.done; total+=st.total
-    })
-    const pct = total>0 ? Math.round((pass/total)*100) : 0
-    return { pass,fail,blocked,query,done,total,pct }
-  }, [runs, folders, planId])
+  // planStats is now computed in reload() as state
 
   return (
     <div style={{ width: '100%' }}>
@@ -316,30 +393,30 @@ export default function PlanPage() {
       {folders.map(folder => {
         const folderScripts = scripts.filter(s => s.folderId === folder.id)
         const isCollapsed = collapsed.has(folder.id)
-        // All-runs stats for this folder
-        const folderSt = getFolderStatsAllRuns(planId, folder.id)
+        const folderSt = folderStats[folder.id] ?? { pass:0, fail:0, blocked:0, query:0, done:0, total:0, pct:0 }
+        const isFolderDuplicating = folder.id.startsWith('dup_f_')
 
         return (
-          <div key={folder.id} style={{ marginBottom:14 }}>
+          <div key={folder.id} style={{ marginBottom:14, opacity: isFolderDuplicating ? 0.6 : 1 }}>
             {/* Folder header */}
             <div
-              onContextMenu={e => handleFolderCtx(e, folder.id)}
+              onContextMenu={e => { if (!isFolderDuplicating) handleFolderCtx(e, folder.id) }}
               style={{
                 display:'flex', alignItems:'center', gap:10, padding:'12px 18px',
                 background:'linear-gradient(90deg, var(--bg-elevated) 0%, var(--bg-depth) 100%)',
                 border:'1px solid var(--border-strong)',
                 borderRadius: isCollapsed ? 11 : '11px 11px 0 0',
-                cursor:'pointer', userSelect:'none',
+                cursor: isFolderDuplicating ? 'wait' : 'pointer', userSelect:'none',
                 boxShadow:'inset 0 1px 0 rgba(255,255,255,0.05)',
               }}
-              onClick={() => setCollapsed(prev => { const n=new Set(prev); n.has(folder.id)?n.delete(folder.id):n.add(folder.id); return n })}>
+              onClick={() => { if (!isFolderDuplicating) setCollapsed(prev => { const n=new Set(prev); n.has(folder.id)?n.delete(folder.id):n.add(folder.id); return n }) }}>
               <span style={{ fontSize:12, color:'var(--text-secondary)', flexShrink:0 }}>{isCollapsed ? '▶' : '▼'}</span>
               <FolderOpen size={15} color="var(--text-body-dim)" style={{ flexShrink:0 }} />
               {editingFolderId === folder.id ? (
                 <input autoFocus value={editFolderName}
                   onChange={e => setEditFolderName(e.target.value)}
-                  onBlur={() => { if (editFolderName.trim()) updateFolder(planId, folder.id, editFolderName.trim()); setEditingFolderId(null); reload() }}
-                  onKeyDown={e => { if (e.key==='Enter') { if (editFolderName.trim()) updateFolder(planId, folder.id, editFolderName.trim()); setEditingFolderId(null); reload() } if (e.key==='Escape') setEditingFolderId(null) }}
+                  onBlur={() => { if (editFolderName.trim()) { setFolders(prev => prev.map(f => f.id === folder.id ? { ...f, name: editFolderName.trim() } : f)); updateFolder(planId, folder.id, editFolderName.trim()).catch(console.error) } setEditingFolderId(null) }}
+                  onKeyDown={e => { if (e.key==='Enter') { if (editFolderName.trim()) { setFolders(prev => prev.map(f => f.id === folder.id ? { ...f, name: editFolderName.trim() } : f)); updateFolder(planId, folder.id, editFolderName.trim()).catch(console.error) } setEditingFolderId(null) } if (e.key==='Escape') setEditingFolderId(null) }}
                   onClick={e => e.stopPropagation()}
                   style={{ background:'var(--bg-surface)', border:'1px solid var(--accent)', borderRadius:5, padding:'2px 7px', fontSize:13, fontWeight:600, color:'var(--text-primary)', outline:'none' }} />
               ) : (
@@ -356,28 +433,32 @@ export default function PlanPage() {
             {!isCollapsed && (
               <div style={{ border:'1px solid var(--border-strong)', borderTop:'none', borderRadius:'0 0 11px 11px', overflow:'hidden', boxShadow:'var(--shadow-sm)' }}>
                 {folderScripts.map((script, idx) => {
-                  // All-runs stats for this script
-                  const scriptSt = getScriptStatsAllRuns(planId, script.id)
+                  const scriptSt = scriptStats[script.id] ?? { pass:0, fail:0, blocked:0, query:0, done:0, total:0, pct:0 }
+                  const isDuplicating = script.id.startsWith('dup_')
                   return (
                     <div key={script.id}>
                       <div
-                        onContextMenu={e => handleScriptCtx(e, script.id)}
-                        onClick={() => router.push(`/projects/${id}/plan/${planId}/script/${script.id}`)}
-                        style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 16px 11px 46px', background:'var(--bg-surface)', borderBottom: idx < folderScripts.length-1 || addingScriptInFolder===folder.id ? '1px solid var(--border)' : 'none', cursor:'pointer', transition:'background 0.1s' }}
-                        onMouseEnter={e => (e.currentTarget.style.background='var(--bg-hover)')}
+                        onContextMenu={e => { if (!isDuplicating) handleScriptCtx(e, script.id) }}
+                        onClick={() => { if (!isDuplicating) router.push(`/projects/${id}/plan/${planId}/script/${script.id}`) }}
+                        style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 16px 11px 46px', background:'var(--bg-surface)', borderBottom: idx < folderScripts.length-1 || addingScriptInFolder===folder.id ? '1px solid var(--border)' : 'none', cursor: isDuplicating ? 'wait' : 'pointer', transition:'background 0.1s', opacity: isDuplicating ? 0.55 : 1 }}
+                        onMouseEnter={e => { if (!isDuplicating) e.currentTarget.style.background='var(--bg-hover)' }}
                         onMouseLeave={e => (e.currentTarget.style.background='var(--bg-surface)')}
                       >
-                        <FileText size={14} color="var(--text-secondary)" strokeWidth={1.5} style={{ flexShrink:0 }} />
-                        <span style={{ fontSize:14, color:'var(--text-body)', fontWeight:500, flex:1, transition:'color 0.1s' }}
-                          onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
-                          onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-body)')}>
-                          {script.name}
+                        {isDuplicating
+                          ? <span style={{ fontSize:12, animation:'spin 1s linear infinite', display:'inline-block', flexShrink:0 }}>⟳</span>
+                          : <FileText size={14} color="var(--text-secondary)" strokeWidth={1.5} style={{ flexShrink:0 }} />
+                        }
+                        <span style={{ fontSize:14, color: isDuplicating ? 'var(--text-muted)' : 'var(--text-body)', fontWeight:500, flex:1, transition:'color 0.1s', fontStyle: isDuplicating ? 'italic' : 'normal' }}
+                          onMouseEnter={e => { if (!isDuplicating) e.currentTarget.style.color = 'var(--text-primary)' }}
+                          onMouseLeave={e => { if (!isDuplicating) e.currentTarget.style.color = 'var(--text-body)' }}>
+                          {script.name}{isDuplicating ? '' : ''}
                         </span>
 
                         {/* All-runs stats for script */}
-                        {runs.length > 0 && (
+                        {runs.length > 0 && !isDuplicating && (
                           <StatBlock pass={scriptSt.pass} fail={scriptSt.fail} blocked={scriptSt.blocked} query={scriptSt.query} done={scriptSt.done} total={scriptSt.total} pct={scriptSt.pct} />
                         )}
+                        {isDuplicating && <span style={{ fontSize:11, color:'var(--text-muted)', flexShrink:0 }}>copying…</span>}
                       </div>
                     </div>
                   )
@@ -415,9 +496,35 @@ export default function PlanPage() {
         <div ref={folderMenuRef} style={{ position:'fixed', left:folderMenu.x, top:folderMenu.y, background:'var(--bg-surface)', border:'1px solid var(--border-strong)', borderRadius:10, padding:'6px 0', minWidth:200, zIndex:9999, boxShadow:'0 8px 32px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.12)' }}>
           <CtxItem label="+ new script" onClick={() => { handleAddScript(folderMenu.folderId); setFolderMenu(null) }} />
           <CtxItem label="Edit name" onClick={() => { setEditingFolderId(folderMenu.folderId); setEditFolderName(folders.find(f=>f.id===folderMenu.folderId)?.name||''); setFolderMenu(null) }} />
-          <CtxItem label="Duplicate folder" onClick={() => { duplicateFolder(planId, folderMenu.folderId); reload(); setFolderMenu(null) }} />
+          <CtxItem label="Duplicate folder" onClick={async () => {
+            const srcFolder = folders.find(f => f.id === folderMenu.folderId)
+            setFolderMenu(null)
+            if (!srcFolder) return
+            // Optimistic: show folder + its scripts immediately
+            const placeholderFolderId = 'dup_f_' + Date.now()
+            const folderScriptsCopy = scripts
+              .filter(s => s.folderId === folderMenu.folderId)
+              .map((s, i) => ({ ...s, id: 'dup_s_' + i + '_' + Date.now(), folderId: placeholderFolderId }))
+            setFolders(prev => [...prev, { ...srcFolder, id: placeholderFolderId, name: srcFolder.name + ' (Copy)', order: prev.length }])
+            setScripts(prev => [...prev, ...folderScriptsCopy])
+            // Capture current stats BEFORE the async op (closure would be stale otherwise)
+            const snapStats = scriptStats
+            const snapRuns = runs
+            showToast('Duplicating folder…')
+            try {
+              await duplicateFolder(planId, folderMenu.folderId)
+              // Lightweight refresh — uses cached rows, no full row re-fetch
+              await refreshAfterDuplicate(snapStats, snapRuns)
+              showToast('Folder duplicated ✓')
+            } catch (err) {
+              console.error('Folder dup failed:', err)
+              setFolders(prev => prev.filter(f => f.id !== placeholderFolderId))
+              setScripts(prev => prev.filter(s => !s.id.startsWith('dup_s_')))
+              showToast('Duplication failed ✗')
+            }
+          }} />
           <div style={{ height:1, background:'var(--border)', margin:'5px 0' }} />
-          <CtxItem label="Delete folder" danger onClick={() => { if (confirm('Delete this folder and all scripts inside?')) { deleteFolder(planId, folderMenu.folderId); reload() } setFolderMenu(null) }} />
+          <CtxItem label="Delete folder" danger onClick={async () => { if (confirm('Delete this folder and all scripts inside?')) { await deleteFolder(planId, folderMenu.folderId); reload() } setFolderMenu(null) }} />
         </div>,
         document.body
       )}
@@ -425,9 +532,30 @@ export default function PlanPage() {
       {scriptMenu && createPortal(
         <div ref={scriptMenuRef} style={{ position:'fixed', left:scriptMenu.x, top:scriptMenu.y, background:'var(--bg-surface)', border:'1px solid var(--border-strong)', borderRadius:10, padding:'6px 0', minWidth:200, zIndex:9999, boxShadow:'0 8px 32px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.12)' }}>
           <CtxItem label="Open script" onClick={() => { const s=scripts.find(x=>x.id===scriptMenu.scriptId); if(s) router.push(`/projects/${id}/plan/${planId}/script/${s.id}`); setScriptMenu(null) }} />
-          <CtxItem label="Duplicate script" onClick={() => { duplicateScript(planId, scriptMenu.scriptId); reload(); setScriptMenu(null) }} />
+          <CtxItem label="Duplicate script" onClick={async () => {
+            const src = scripts.find(s => s.id === scriptMenu.scriptId)
+            setScriptMenu(null)
+            if (!src) return
+            // Optimistic: show placeholder immediately so UI feels instant
+            const placeholderId = 'dup_' + Date.now()
+            setScripts(prev => [...prev, { ...src, id: placeholderId, name: src.name + ' (Copy)', order: prev.length }])
+            // Capture current stats BEFORE the async op
+            const snapStats = scriptStats
+            const snapRuns = runs
+            showToast('Duplicating script…')
+            try {
+              await duplicateScript(planId, scriptMenu.scriptId)
+              // Lightweight refresh — uses cached rows, skips full row re-fetch
+              await refreshAfterDuplicate(snapStats, snapRuns)
+              showToast('Script duplicated ✓')
+            } catch (err) {
+              console.error('Script dup failed:', err)
+              setScripts(prev => prev.filter(s => s.id !== placeholderId))
+              showToast('Duplication failed ✗')
+            }
+          }} />
           <div style={{ height:1, background:'var(--border)', margin:'5px 0' }} />
-          <CtxItem label="Delete script" danger onClick={() => { if (confirm('Delete this script?')) { deleteScript(planId, scriptMenu.scriptId); reload() } setScriptMenu(null) }} />
+          <CtxItem label="Delete script" danger onClick={async () => { if (confirm('Delete this script?')) { await deleteScript(planId, scriptMenu.scriptId); reload() } setScriptMenu(null) }} />
         </div>,
         document.body
       )}

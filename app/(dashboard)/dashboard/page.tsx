@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { getProjects, getPlans, getRows, getScripts, getFolders, getTestRuns } from '@/lib/store'
+import { getProjects, getPlans, getRows, getScripts, getTestRuns } from '@/lib/db'
 
 export default function DashboardPage() {
   const [stats, setStats] = useState({ projects:0, plans:0, cases:0, runs:0 })
@@ -9,17 +9,33 @@ export default function DashboardPage() {
   const router = useRouter()
 
   useEffect(() => {
-    const projects = getProjects()
-    let plans=0, cases=0, runs=0
-    projects.forEach(p => {
-      const pl = getPlans(p.id); plans += pl.length
-      pl.forEach(plan => {
-        const scripts = getScripts(plan.id)
-        scripts.forEach(s => { cases += getRows(s.id).filter(r=>r.type==='case').length })
-        runs += getTestRuns(plan.id).length
-      })
-    })
-    setStats({ projects:projects.length, plans, cases, runs })
+    async function load() {
+      const projects = await getProjects()
+      if (projects.length === 0) { setStats({ projects:0, plans:0, cases:0, runs:0 }); return }
+
+      // Batch 1: all plans in parallel
+      const planLists = await Promise.all(projects.map(p => getPlans(p.id)))
+      const allPlans = planLists.flat()
+
+      if (allPlans.length === 0) { setStats({ projects: projects.length, plans:0, cases:0, runs:0 }); return }
+
+      // Batch 2: all scripts + runs in parallel
+      const [scriptLists, runLists] = await Promise.all([
+        Promise.all(allPlans.map(pl => getScripts(pl.id))),
+        Promise.all(allPlans.map(pl => getTestRuns(pl.id))),
+      ])
+      const allScripts = scriptLists.flat()
+
+      // Batch 3: all rows in parallel
+      const rowLists = allScripts.length > 0
+        ? await Promise.all(allScripts.map(s => getRows(s.id)))
+        : []
+
+      const cases = rowLists.flat().filter(r => r.type === 'case').length
+      const runs  = runLists.flat().length
+      setStats({ projects: projects.length, plans: allPlans.length, cases, runs })
+    }
+    load()
   }, [])
 
   useEffect(() => {

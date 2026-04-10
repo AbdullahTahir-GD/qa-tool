@@ -1,18 +1,39 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { getProjects, getPlans, type Project } from '@/lib/store'
+import { getProjects, getPlans, type Project } from '@/lib/db'
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([])
+  const [planCounts, setPlanCounts] = useState<Record<string, { count: number; firstId: string | null }>>({})
+  const [loading, setLoading] = useState(true)
   const router = useRouter()
 
   useEffect(() => {
-    const refresh = () => setProjects(getProjects())
-    refresh()
-    window.addEventListener('qaflow:change', refresh)
-    return () => window.removeEventListener('qaflow:change', refresh)
+    async function load() {
+      setLoading(true)
+      const ps = await getProjects()
+      setProjects(ps)
+      const planLists = await Promise.all(ps.map(p => getPlans(p.id)))
+      const counts: Record<string, { count: number; firstId: string | null }> = {}
+      ps.forEach((p, i) => {
+        counts[p.id] = { count: planLists[i].length, firstId: planLists[i][0]?.id ?? null }
+      })
+      setPlanCounts(counts)
+      setLoading(false)
+    }
+    load()
+    window.addEventListener('qaflow:change', load)
+    return () => window.removeEventListener('qaflow:change', load)
   }, [])
+
+  if (loading) {
+    return (
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'70vh' }}>
+        <div style={{ fontSize:13, color:'var(--text-muted)' }}>Loading…</div>
+      </div>
+    )
+  }
 
   if (projects.length === 0) {
     return (
@@ -41,12 +62,11 @@ export default function ProjectsPage() {
       {/* Project cards */}
       <div style={{ width:'100%', maxWidth:480, display:'flex', flexDirection:'column', gap:10 }}>
         {projects.map((p, i) => {
-          const plans = getPlans(p.id)
-          const planCount = plans.length
+          const info = planCounts[p.id] ?? { count: 0, firstId: null }
           const created = new Date(p.createdAt).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' })
           return (
             <div key={p.id}
-              onClick={() => router.push(planCount ? `/projects/${p.id}/plan/${plans[0].id}` : '/projects/' + p.id)}
+              onClick={() => router.push(info.firstId ? `/projects/${p.id}/plan/${info.firstId}` : '/projects/' + p.id)}
               style={{
                 padding:'18px 22px', cursor:'pointer', userSelect:'none',
                 background:'var(--bg-surface)',
@@ -80,7 +100,7 @@ export default function ProjectsPage() {
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:15, fontWeight:700, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}</div>
                 <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:3 }}>
-                  {planCount} plan{planCount !== 1 ? 's' : ''} · Created {created}
+                  {info.count} plan{info.count !== 1 ? 's' : ''} · Created {created}
                 </div>
               </div>
 
