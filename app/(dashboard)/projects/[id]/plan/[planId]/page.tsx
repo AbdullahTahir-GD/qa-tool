@@ -3,16 +3,17 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useRouter } from 'next/navigation'
 import {
-  getProjects, getPlans, getFolders, saveFolder, deleteFolder, updateFolder,
+  getProjects, getProjectById, getPlans, getFolders, saveFolder, deleteFolder, updateFolder,
   getScripts, saveScript, deleteScript, duplicateScript, duplicateFolder,
-  getTestRuns, getRows, getResults, computeStats, sumStats, peekCache,
+  getTestRuns, getRows, getResults, computeStats, sumStats, peekCache, invalidateCache,
   type Project, type TestPlan, type Folder, type Script, type TestRun, type TestRow, type TestResult, type Stats
 } from '@/lib/db'
+import { supabase } from '@/lib/supabase'
 
 function zeroStats(): Stats { return { pass:0, fail:0, blocked:0, query:0, exclude:0, done:0, total:0, pct:0 } }
 import { Home, ChevronDown, ChevronRight, Plus, FolderOpen, FileText } from 'lucide-react'
 
-const C = { pass:'#22c55e', fail:'#ef4444', blocked:'#f59e0b', query:'#a78bfa' }
+const C = { pass:'#22c55e', fail:'#ef4444', blocked:'#f59e0b', query:'#38bdf8' }
 
 function MiniBar({ pass,fail,blocked,query,total }: { pass:number; fail:number; blocked:number; query:number; total:number }) {
   if (!total) return <div style={{ width:120, height:5, background:'var(--border-track)', borderRadius:3 }} />
@@ -67,10 +68,10 @@ function Toast({ msg, onDone }: { msg: string; onDone: () => void }) {
   return createPortal(
     <div style={{
       position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)',
-      background:'#1e2235', border:'1px solid rgba(255,255,255,0.12)',
+      background:'var(--bg-elevated)', border:'1px solid rgba(14,165,233,0.30)',
       borderRadius:10, padding:'10px 20px', fontSize:13, fontWeight:500,
-      color:'rgba(255,255,255,0.85)', zIndex:99999,
-      boxShadow:'0 4px 24px rgba(0,0,0,0.45)',
+      color:'var(--text-body)', zIndex:99999,
+      boxShadow:'0 4px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(14,165,233,0.12)',
       pointerEvents:'none', whiteSpace:'nowrap',
     }}>{msg}</div>,
     document.body
@@ -110,6 +111,14 @@ export default function PlanPage() {
   const folderInputRef = useRef<HTMLInputElement>(null)
   const folderMenuRef = useRef<HTMLDivElement>(null)
   const scriptMenuRef = useRef<HTMLDivElement>(null)
+
+  // Refs to latest state — lets Realtime handlers read current values without stale closures
+  const foldersRef     = useRef<Folder[]>([])
+  const scriptsRef     = useRef<Script[]>([])
+  const scriptStatsRef = useRef<Record<string, Stats>>({})
+  useEffect(() => { foldersRef.current     = folders },     [folders])
+  useEffect(() => { scriptsRef.current     = scripts },     [scripts])
+  useEffect(() => { scriptStatsRef.current = scriptStats }, [scriptStats])
 
   const showToast = useCallback((msg: string) => {
     setToast(msg)
@@ -201,9 +210,11 @@ export default function PlanPage() {
         getProjects(), getPlans(id),
         reload(), // data load runs in parallel with the project check
       ])
-      const proj = projects.find(p => p.id === id)
       const pl = plans.find(p => p.id === planId)
-      if (!proj || !pl) { router.push('/projects'); return }
+      if (!pl) { router.push('/projects'); return }
+      // Personal projects are in `projects`; team projects are fetched by ID as fallback
+      const proj = projects.find(p => p.id === id) ?? await getProjectById(id)
+      if (!proj) { router.push('/projects'); return }
       setProject(proj); setPlan(pl)
     }
     load()
@@ -214,6 +225,111 @@ export default function PlanPage() {
     window.addEventListener('qaflow:change', handler)
     return () => window.removeEventListener('qaflow:change', handler)
   }, [reload])
+
+  // Polling + visibility-based refresh — guarantees changes from other team members
+  // appear within a few seconds, even if Supabase Realtime is misconfigured/blocked
+  const scriptsRefForPoll = useRef<Script[]>([])
+  const runsRefForPoll = useRef<TestRun[]>([])
+  useEffect(() => { scriptsRefForPoll.current = scripts }, [scripts])
+  useEffect(() => { runsRefForPoll.current = runs }, [runs])
+
+  const forceReload = useCallback(async () => {
+    invalidateCache(`folders:${planId}`, `scripts:${planId}`, `runs:${planId}`)
+    scriptsRefForPoll.current.forEach(s => invalidateCache(`rows:${s.id}`))
+    runsRefForPoll.current.forEach(r => invalidateCache(`results:${r.id}`))
+    await reload()
+  }, [planId, reload])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') forceReload()
+    }, 5000)
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') forceReload()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onVisibility)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onVisibility)
+    }
+  }, [forceReload])
+
+  // Supabase Realtime — sync changes from other team members instantly
+  // Each event type is handled directly from the payload — zero extra queries for INSERT/UPDATE
+  useEffect(() => {
+    type FR = { id: string; plan_id: string; name: string; sort_order: number }
+    type SR = { id: string; plan_id: string; folder_id: string; name: string; description: string; sort_order: number }
+
+    const channel = supabase
+      .channel(`plan-${planId}`)
+
+      // ── folders ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'folders',
+        filter: `plan_id=eq.${planId}` }, ({ new: r }) => {
+        const f: Folder = { id:(r as FR).id, planId:(r as FR).plan_id, name:(r as FR).name, order:(r as FR).sort_order }
+        setFolders(prev => prev.some(x=>x.id===f.id) ? prev : [...prev, f].sort((a,b)=>a.order-b.order))
+        setFolderStats(prev => ({ ...prev, [f.id]: prev[f.id] ?? zeroStats() }))
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'folders',
+        filter: `plan_id=eq.${planId}` }, ({ new: r }) => {
+        const f: Folder = { id:(r as FR).id, planId:(r as FR).plan_id, name:(r as FR).name, order:(r as FR).sort_order }
+        setFolders(prev => prev.map(x => x.id===f.id ? f : x))
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'folders',
+        filter: `plan_id=eq.${planId}` }, ({ old: r }) => {
+        const id = (r as { id: string }).id
+        setFolders(prev => prev.filter(f=>f.id!==id))
+        setFolderStats(prev => { const n={...prev}; delete n[id]; return n })
+      })
+
+      // ── scripts ──
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'scripts',
+        filter: `plan_id=eq.${planId}` }, ({ new: r }) => {
+        const sc: Script = { id:(r as SR).id, planId:(r as SR).plan_id, folderId:(r as SR).folder_id, name:(r as SR).name, description:(r as SR).description||'', order:(r as SR).sort_order }
+        setScripts(prev => prev.some(x=>x.id===sc.id) ? prev : [...prev, sc].sort((a,b)=>a.order-b.order))
+        // New script has no rows yet — zero stats; folder total unchanged (no case rows added)
+        setScriptStats(prev => ({ ...prev, [sc.id]: prev[sc.id] ?? zeroStats() }))
+        // Keep folder stats — new empty script contributes nothing to pass/fail/total
+        setFolderStats(prev => ({ ...prev, [sc.folderId]: prev[sc.folderId] ?? zeroStats() }))
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'scripts',
+        filter: `plan_id=eq.${planId}` }, ({ new: r }) => {
+        const sc: Script = { id:(r as SR).id, planId:(r as SR).plan_id, folderId:(r as SR).folder_id, name:(r as SR).name, description:(r as SR).description||'', order:(r as SR).sort_order }
+        setScripts(prev => prev.map(x => x.id===sc.id ? sc : x))
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'scripts',
+        filter: `plan_id=eq.${planId}` }, ({ old: r }) => {
+        const id = (r as { id: string }).id
+        setScripts(prev => prev.filter(s=>s.id!==id))
+        setScriptStats(prev => { const n={...prev}; delete n[id]; return n })
+        // Recompute folder stats from refs (no stale closure) — pure local computation
+        const remaining = scriptsRef.current.filter(s=>s.id!==id)
+        const curStats  = scriptStatsRef.current
+        const fStats: Record<string, Stats> = {}
+        for (const folder of foldersRef.current) {
+          const fs = remaining.filter(sc=>sc.folderId===folder.id)
+          fStats[folder.id] = sumStats(fs.map(sc => curStats[sc.id] ?? zeroStats()))
+        }
+        setFolderStats(fStats)
+        setPlanStats(Object.keys(fStats).length>0 ? sumStats(Object.values(fStats)) : null)
+      })
+
+      // ── runs — full reload needed (affects all stats) ──
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'runs',
+        filter: `plan_id=eq.${planId}` }, () => reload())
+
+      // ── This plan deleted by another user → redirect to project ──
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'plans',
+        filter: `id=eq.${planId}` }, () => {
+        setToast('This test plan was deleted by another team member.')
+        setTimeout(() => router.push(`/projects/${id}`), 2500)
+      })
+
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [planId, id, reload, router])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -280,7 +396,8 @@ export default function PlanPage() {
         background:'var(--bg-surface)',
         borderRadius:12,
         border:'1px solid var(--border-strong)',
-        boxShadow:'var(--shadow-sm)',
+        borderTop:'3px solid #0ea5e9',
+        boxShadow:'0 2px 16px rgba(14,165,233,0.10)',
       }}>
         {/* Back to project */}
         <button onClick={() => router.push('/projects')}
@@ -321,16 +438,16 @@ export default function PlanPage() {
             style={{
               display:'flex', alignItems:'center', gap:6,
               padding:'7px 14px',
-              background: hasFolders ? 'var(--bg-elevated)' : 'var(--bg-depth)',
-              border:'1px solid var(--border-strong)',
-              borderRadius:9, fontSize:13, color:'var(--text-body)',
+              background: hasFolders ? 'rgba(14,165,233,0.08)' : 'var(--bg-depth)',
+              border: hasFolders ? '1px solid rgba(14,165,233,0.30)' : '1px solid var(--border-strong)',
+              borderRadius:9, fontSize:13, color: hasFolders ? '#0284c7' : 'var(--text-body)',
               cursor: hasFolders ? 'pointer' : 'not-allowed',
-              fontWeight:500, transition:'all 0.14s',
+              fontWeight:600, transition:'all 0.14s',
               opacity: hasFolders ? 1 : 0.5,
             }}
-            onMouseEnter={e => { if (hasFolders) e.currentTarget.style.background='var(--bg-hover)' }}
-            onMouseLeave={e => { e.currentTarget.style.background = hasFolders ? 'var(--bg-elevated)' : 'var(--bg-depth)' }}>
-            <Plus size={13} color="var(--text-secondary)" /> Script <ChevronDown size={12} />
+            onMouseEnter={e => { if (hasFolders) { e.currentTarget.style.background='rgba(14,165,233,0.16)'; e.currentTarget.style.borderColor='rgba(14,165,233,0.55)' } }}
+            onMouseLeave={e => { if (hasFolders) { e.currentTarget.style.background='rgba(14,165,233,0.08)'; e.currentTarget.style.borderColor='rgba(14,165,233,0.30)' } }}>
+            <Plus size={13} color={hasFolders ? '#0ea5e9' : 'var(--text-secondary)'} /> Script <ChevronDown size={12} />
           </button>
           {scriptDropdown && (
             <div style={{ position:'absolute', top:'calc(100% + 6px)', right:0, background:'var(--bg-surface)', border:'1px solid var(--border-strong)', borderRadius:11, padding:'6px 0', minWidth:190, zIndex:9999, boxShadow:'var(--shadow-md)' }}>
@@ -349,16 +466,16 @@ export default function PlanPage() {
             style={{
               display:'flex', alignItems:'center', gap:6,
               padding:'7px 16px',
-              background: addingFolder ? 'var(--bg-depth)' : 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+              background: addingFolder ? 'var(--bg-depth)' : 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)',
               border: addingFolder ? '1px solid var(--border-strong)' : 'none',
               borderRadius:9, fontSize:13, color: addingFolder ? 'var(--text-muted)' : 'white',
               cursor: addingFolder ? 'not-allowed' : 'pointer',
               fontWeight:600, transition:'all 0.15s',
               opacity: addingFolder ? 0.6 : 1,
-              boxShadow: addingFolder ? 'none' : '0 3px 12px rgba(99,102,241,0.40)',
+              boxShadow: addingFolder ? 'none' : '0 3px 12px rgba(14,165,233,0.40)',
             }}
-            onMouseEnter={e => { if (!addingFolder) { e.currentTarget.style.boxShadow='0 4px 18px rgba(99,102,241,0.60)'; e.currentTarget.style.transform='translateY(-1px)' } }}
-            onMouseLeave={e => { if (!addingFolder) { e.currentTarget.style.boxShadow='0 3px 12px rgba(99,102,241,0.40)'; e.currentTarget.style.transform='none' } }}>
+            onMouseEnter={e => { if (!addingFolder) { e.currentTarget.style.boxShadow='0 4px 18px rgba(14,165,233,0.60)'; e.currentTarget.style.transform='translateY(-1px)' } }}
+            onMouseLeave={e => { if (!addingFolder) { e.currentTarget.style.boxShadow='0 3px 12px rgba(14,165,233,0.40)'; e.currentTarget.style.transform='none' } }}>
             <FolderOpen size={13} color={addingFolder ? 'var(--text-muted)' : 'rgba(255,255,255,0.9)'} /> Folder <ChevronDown size={12} />
           </button>
           {folderDropdown && !addingFolder && (
@@ -384,8 +501,24 @@ export default function PlanPage() {
 
       {/* ── Empty state ── */}
       {folders.length === 0 && !addingFolder && (
-        <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--text-muted)', fontSize:13, border:'1px dashed var(--border)', borderRadius:10 }}>
-          No folders yet — click <strong style={{ color:'var(--text-secondary)' }}>Folder</strong> above to create your first one
+        <div style={{
+          textAlign:'center', padding:'56px 24px',
+          background:'linear-gradient(135deg, rgba(14,165,233,0.04) 0%, rgba(14,165,233,0.01) 100%)',
+          border:'1px dashed rgba(14,165,233,0.30)',
+          borderRadius:14,
+        }}>
+          <div style={{
+            width:48, height:48, borderRadius:14, margin:'0 auto 16px',
+            background:'linear-gradient(135deg, rgba(14,165,233,0.15) 0%, rgba(2,132,199,0.08) 100%)',
+            border:'1px solid rgba(14,165,233,0.25)',
+            display:'flex', alignItems:'center', justifyContent:'center',
+          }}>
+            <FolderOpen size={22} color="#0ea5e9" strokeWidth={1.5} />
+          </div>
+          <p style={{ fontSize:14, fontWeight:600, color:'var(--text-primary)', marginBottom:6 }}>No folders yet</p>
+          <p style={{ fontSize:13, color:'var(--text-secondary)' }}>
+            Click <strong style={{ color:'#0ea5e9', fontWeight:700 }}>+ Folder</strong> above to create your first one
+          </p>
         </div>
       )}
 
@@ -403,11 +536,11 @@ export default function PlanPage() {
               onContextMenu={e => { if (!isFolderDuplicating) handleFolderCtx(e, folder.id) }}
               style={{
                 display:'flex', alignItems:'center', gap:10, padding:'12px 18px',
-                background:'linear-gradient(90deg, var(--bg-elevated) 0%, var(--bg-depth) 100%)',
-                border:'1px solid var(--border-strong)',
+                background:'linear-gradient(90deg, rgba(14,165,233,0.10) 0%, rgba(14,165,233,0.04) 100%)',
+                border:'1px solid rgba(14,165,233,0.22)',
+                borderLeft:'3px solid #0ea5e9',
                 borderRadius: isCollapsed ? 11 : '11px 11px 0 0',
                 cursor: isFolderDuplicating ? 'wait' : 'pointer', userSelect:'none',
-                boxShadow:'inset 0 1px 0 rgba(255,255,255,0.05)',
               }}
               onClick={() => { if (!isFolderDuplicating) setCollapsed(prev => { const n=new Set(prev); n.has(folder.id)?n.delete(folder.id):n.add(folder.id); return n }) }}>
               <span style={{ fontSize:12, color:'var(--text-secondary)', flexShrink:0 }}>{isCollapsed ? '▶' : '▼'}</span>
@@ -431,7 +564,7 @@ export default function PlanPage() {
 
             {/* Scripts list */}
             {!isCollapsed && (
-              <div style={{ border:'1px solid var(--border-strong)', borderTop:'none', borderRadius:'0 0 11px 11px', overflow:'hidden', boxShadow:'var(--shadow-sm)' }}>
+              <div style={{ border:'1px solid rgba(14,165,233,0.18)', borderTop:'none', borderRadius:'0 0 11px 11px', overflow:'hidden', boxShadow:'0 3px 12px rgba(14,165,233,0.06)' }}>
                 {folderScripts.map((script, idx) => {
                   const scriptSt = scriptStats[script.id] ?? { pass:0, fail:0, blocked:0, query:0, done:0, total:0, pct:0 }
                   const isDuplicating = script.id.startsWith('dup_')
@@ -441,12 +574,12 @@ export default function PlanPage() {
                         onContextMenu={e => { if (!isDuplicating) handleScriptCtx(e, script.id) }}
                         onClick={() => { if (!isDuplicating) router.push(`/projects/${id}/plan/${planId}/script/${script.id}`) }}
                         style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 16px 11px 46px', background:'var(--bg-surface)', borderBottom: idx < folderScripts.length-1 || addingScriptInFolder===folder.id ? '1px solid var(--border)' : 'none', cursor: isDuplicating ? 'wait' : 'pointer', transition:'background 0.1s', opacity: isDuplicating ? 0.55 : 1 }}
-                        onMouseEnter={e => { if (!isDuplicating) e.currentTarget.style.background='var(--bg-hover)' }}
+                        onMouseEnter={e => { if (!isDuplicating) e.currentTarget.style.background='rgba(14,165,233,0.05)' }}
                         onMouseLeave={e => (e.currentTarget.style.background='var(--bg-surface)')}
                       >
                         {isDuplicating
                           ? <span style={{ fontSize:12, animation:'spin 1s linear infinite', display:'inline-block', flexShrink:0 }}>⟳</span>
-                          : <FileText size={14} color="var(--text-secondary)" strokeWidth={1.5} style={{ flexShrink:0 }} />
+                          : <FileText size={14} color="#0ea5e9" strokeWidth={1.5} style={{ flexShrink:0, opacity:0.75 }} />
                         }
                         <span style={{ fontSize:14, color: isDuplicating ? 'var(--text-muted)' : 'var(--text-body)', fontWeight:500, flex:1, transition:'color 0.1s', fontStyle: isDuplicating ? 'italic' : 'normal' }}
                           onMouseEnter={e => { if (!isDuplicating) e.currentTarget.style.color = 'var(--text-primary)' }}
@@ -480,7 +613,7 @@ export default function PlanPage() {
                 {addingScriptInFolder !== folder.id && (
                   <button onClick={() => handleAddScript(folder.id)}
                     style={{ width:'100%', padding:'9px 16px 9px 64px', background:'none', border:'none', textAlign:'left', fontSize:13, color:'var(--text-muted)', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}
-                    onMouseEnter={e => { e.currentTarget.style.color='var(--accent)'; e.currentTarget.style.background='rgba(99,102,241,0.04)' }}
+                    onMouseEnter={e => { e.currentTarget.style.color='var(--accent)'; e.currentTarget.style.background='rgba(14,165,233,0.04)' }}
                     onMouseLeave={e => { e.currentTarget.style.color='var(--text-muted)'; e.currentTarget.style.background='none' }}>
                     <Plus size={11} /> new script
                   </button>

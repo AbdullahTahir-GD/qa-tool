@@ -7,9 +7,10 @@ import {
   getScripts, getRows, saveRow, insertRowBefore, updateRow, deleteRow,
   getTestRuns, saveTestRun, deleteTestRun, updateTestRun,
   getResult, setResult, getResults,
-  getDetail, saveDetail, generateId, computeStats, sumStats, peekCache,
+  getDetail, saveDetail, generateId, computeStats, sumStats, peekCache, invalidateCache,
   type Stats, type Script, type TestRow, type TestRun, type TestStatus, type TestResult, type TestCaseDetail
 } from '@/lib/db'
+import { supabase } from '@/lib/supabase'
 
 // ── DetailPanel ─────────────────────────────────────────────────────────────
 // Extracted into its own memo'd component so that typing inside it only
@@ -110,7 +111,7 @@ const DetailPanel = memo(function DetailPanel({
                 placeholder={placeholder}
                 rows={numRows}
                 style={{ width: '100%', padding: '6px 9px', background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, color: 'var(--text-body)', resize: 'vertical', outline: 'none', fontFamily: 'inherit', lineHeight: 1.5, boxSizing: 'border-box', transition: 'border-color 0.15s' }}
-                onFocus={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,0.5)')}
+                onFocus={e => (e.currentTarget.style.borderColor = 'rgba(14,165,233,0.5)')}
                 onBlur={e => (e.currentTarget.style.borderColor = 'var(--border)')}
               />
             </div>
@@ -188,8 +189,8 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
         minWidth: 'max-content',
         cursor: isHeading ? 'default' : 'pointer',
         background: isHeading
-          ? 'linear-gradient(90deg, rgba(99,102,241,0.13) 0%, rgba(99,102,241,0.04) 100%)'
-          : isActiveRow ? 'rgba(99,102,241,0.10)' : 'transparent',
+          ? 'linear-gradient(90deg, rgba(14,165,233,0.13) 0%, rgba(14,165,233,0.04) 100%)'
+          : isActiveRow ? 'rgba(14,165,233,0.10)' : 'transparent',
         borderLeft: isHeading ? '3px solid var(--accent)' : isActiveRow ? '3px solid var(--accent)' : '3px solid transparent',
         transition: 'none',
       }}
@@ -270,7 +271,7 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
       {/* Result cells per run */}
       {runs.map(run => {
         if (isHeading) {
-          return <div key={run.id} style={{ width: 136, alignSelf: 'stretch', borderLeft: '1px solid var(--border-subtle)', flexShrink: 0, background: 'linear-gradient(90deg,rgba(99,102,241,0.06) 0%,transparent 100%)' }} />
+          return <div key={run.id} style={{ width: 136, alignSelf: 'stretch', borderLeft: '1px solid var(--border-subtle)', flexShrink: 0, background: 'linear-gradient(90deg,rgba(14,165,233,0.06) 0%,transparent 100%)' }} />
         }
         const res = resultsMap[run.id]?.[row.id]
         const st = res?.status && res.status !== 'not_run' ? STATUS_ICONS[res.status] : null
@@ -317,6 +318,9 @@ export default function ScriptPage() {
     }
     return map
   })
+
+  // Deletion notice — shown when another user deletes this script or plan
+  const [deletedNotice, setDeletedNotice] = useState<string | null>(null)
 
   // Panel state
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
@@ -395,7 +399,13 @@ export default function ScriptPage() {
     setResultsMap(map)
     // Compute stats from already-loaded data — zero extra Supabase calls
     const caseRowsLoaded = rws.filter(r => r.type === 'case')
-    const aRunId = currentActiveRunId !== undefined ? currentActiveRunId : null
+    // If the previously-active run was deleted by another user, clear it
+    const runStillExists = currentActiveRunId ? rns.some(r => r.id === currentActiveRunId) : false
+    if (currentActiveRunId && !runStillExists) {
+      setActiveRunId(null)
+      setActiveRowId(null)
+    }
+    const aRunId = (currentActiveRunId && runStillExists) ? currentActiveRunId : null
     if (aRunId && map[aRunId] !== undefined) {
       setTopStats(computeStats(caseRowsLoaded, Object.values(map[aRunId])))
     } else if (aRunId) {
@@ -421,6 +431,61 @@ export default function ScriptPage() {
     window.addEventListener('qaflow:change', handler)
     return () => window.removeEventListener('qaflow:change', handler)
   }, [reload, activeRunId])
+
+  // Supabase Realtime — sync test results and rows from other team members
+  useEffect(() => {
+    const channel = supabase
+      .channel(`script-${scriptId}`)
+      // Row / result changes — reload with current run
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rows',
+        filter: `script_id=eq.${scriptId}` }, () => reload(activeRunId))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'results' },
+        () => reload(activeRunId))
+      // Run deleted — reload clears activeRunId if it was the deleted one
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'runs',
+        filter: `plan_id=eq.${planId}` }, () => reload(activeRunId))
+      // THIS script deleted by another user → show notice + redirect to plan page
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'scripts',
+        filter: `id=eq.${scriptId}` }, () => {
+        setDeletedNotice('This script was deleted by another team member.')
+        setTimeout(() => router.replace(`/projects/${id}/plan/${planId}`), 2500)
+      })
+      // Parent plan deleted by another user → redirect to project
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'plans',
+        filter: `id=eq.${planId}` }, () => {
+        setDeletedNotice('This test plan was deleted by another team member.')
+        setTimeout(() => router.replace(`/projects/${id}`), 2500)
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [scriptId, planId, activeRunId, reload, id, router])
+
+  // Polling + visibility-based refresh — guarantees changes from other team members
+  // appear within a few seconds, even if Supabase Realtime is misconfigured
+  const runsRefForPoll = useRef<TestRun[]>([])
+  useEffect(() => { runsRefForPoll.current = runs }, [runs])
+
+  const forceReload = useCallback(async () => {
+    invalidateCache(`rows:${scriptId}`, `runs:${planId}`, `scripts:${planId}`)
+    runsRefForPoll.current.forEach(r => invalidateCache(`results:${r.id}`))
+    await reload(activeRunIdRef.current)
+  }, [scriptId, planId, reload])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') forceReload()
+    }, 5000)
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') forceReload()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onVisibility)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onVisibility)
+    }
+  }, [forceReload])
 
   useEffect(() => {
     const close = (e: MouseEvent) => {
@@ -713,6 +778,7 @@ export default function ScriptPage() {
     const y = Math.min(e.clientY, window.innerHeight - 200 - 8)
     setRowMenu({ x, y, rowId })
   }, [])
+
 
   const activeRow = useMemo(() => rows.find(r => r.id === activeRowId), [rows, activeRowId])
   const activeResult = activeRunId && activeRowId ? resultsMap[activeRunId]?.[activeRowId] : undefined
@@ -1045,15 +1111,40 @@ export default function ScriptPage() {
     doc.save(`Testra-Test-Report-${script?.name || 'script'}-${runs.length}runs.pdf`)
   }
 
+  // ── Deleted notice overlay ──
+  if (deletedNotice) {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        height: 'calc(100vh - var(--topnav-height) - 48px)',
+        background: 'var(--bg-surface)', border: '1px solid var(--border-strong)',
+        borderRadius: 14, flexDirection: 'column', gap: 16,
+      }}>
+        <div style={{
+          width: 56, height: 56, borderRadius: 16, background: 'rgba(239,68,68,0.12)',
+          border: '1px solid rgba(239,68,68,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 26,
+        }}>🗑️</div>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>
+            {deletedNotice}
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Redirecting you back…</div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={{
       display: 'flex',
       height: 'calc(100vh - var(--topnav-height) - 48px)',
       overflow: 'hidden',
       background: 'var(--bg-surface)',
-      border: '1px solid var(--border-strong)',
+      border: '1px solid rgba(14,165,233,0.18)',
+      borderTop: '3px solid #0ea5e9',
       borderRadius: 14,
-      boxShadow: 'var(--shadow-md)',
+      boxShadow: '0 2px 20px rgba(14,165,233,0.08), var(--shadow-md)',
     }}>
 
       {/* ══ MAIN ══ */}
@@ -1061,102 +1152,131 @@ export default function ScriptPage() {
 
         {/* Top bar */}
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '10px 18px',
-          background: 'linear-gradient(90deg, var(--bg-elevated) 0%, var(--bg-depth) 100%)',
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '9px 16px',
+          background: 'var(--bg-elevated)',
           borderBottom: '1px solid var(--border-strong)',
           flexShrink: 0, borderRadius: '14px 14px 0 0',
-          boxShadow: 'inset 0 -1px 0 var(--border)',
           flexWrap: 'wrap', rowGap: 6,
         }}>
+
+          {/* ── Back ── */}
           <button onClick={() => router.back()}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              fontSize: 13, color: 'var(--text-secondary)',
-              background: 'var(--bg-surface)', border: '1px solid var(--border-strong)',
-              borderRadius: 7, cursor: 'pointer', padding: '5px 11px',
-              fontWeight: 500, transition: 'all 0.14s',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.color='var(--text-primary)'; e.currentTarget.style.borderColor='var(--border-accent)' }}
-            onMouseLeave={e => { e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.borderColor='var(--border-strong)' }}>
-            ← Back
-          </button>
-          <div style={{ width:1, height:16, background:'var(--border-strong)' }} />
-          <div style={{
-            display:'flex', alignItems:'center', gap:6,
-            background:'linear-gradient(135deg,rgba(99,102,241,0.15) 0%,rgba(99,102,241,0.08) 100%)',
-            border:'1px solid rgba(99,102,241,0.3)', borderRadius:8, padding:'4px 12px',
-          }}>
-            <span style={{ fontSize:11, color:'rgba(99,102,241,0.7)' }}>▶</span>
-            <span style={{ fontSize:13, color:'var(--text-primary)', fontWeight:700, letterSpacing:'-0.2px' }}>{script?.name}</span>
-          </div>
-          {allRunsStats && (
-            <div style={{
               display:'flex', alignItems:'center', gap:5,
-              background:'var(--bg-depth)', border:'1px solid var(--border)',
-              borderRadius:7, padding:'4px 10px',
-            }}>
-              <span style={{ fontSize:11, color:'#22c55e', fontWeight:700 }}>✓{allRunsStats.pass}</span>
-              <span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span>
-              <span style={{ fontSize:11, color:'#ef4444', fontWeight:700 }}>✗{allRunsStats.fail}</span>
-              <span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span>
-              <span style={{ fontSize:11, color:'#f59e0b', fontWeight:700 }}>⊘{allRunsStats.blocked}</span>
-              {allRunsStats.query > 0 && <><span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span><span style={{ fontSize:11, color:'#3b82f6', fontWeight:700 }}>?{allRunsStats.query}</span></>}
-              {allRunsStats.exclude > 0 && <><span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span><span style={{ fontSize:11, color:'#475569', fontWeight:700 }}>–{allRunsStats.exclude}</span></>}
-              <span style={{ fontSize:10, color:'var(--border-strong)' }}>·</span>
-              <span style={{ fontSize:11, color:'var(--text-secondary)', fontWeight:600 }}>{allRunsStats.done}/{allRunsStats.total} <span style={{ fontWeight:400, color:'var(--text-muted)' }}>{allRunsStats.pct}%</span></span>
+              fontSize:12.5, color:'var(--text-secondary)',
+              background:'var(--bg-surface)', border:'1px solid var(--border-strong)',
+              borderRadius:8, cursor:'pointer', padding:'5px 12px',
+              fontWeight:600, transition:'all 0.14s', flexShrink:0,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color='var(--text-primary)'; e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.background='var(--bg-depth)' }}
+            onMouseLeave={e => { e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.background='var(--bg-surface)' }}>
+            <span style={{ fontSize:11 }}>←</span> Back
+          </button>
+
+          {/* ── Divider ── */}
+          <div style={{ width:1, height:20, background:'var(--border-strong)', flexShrink:0 }} />
+
+          {/* ── Script name ── */}
+          <div style={{
+            display:'flex', alignItems:'center', gap:7, flexShrink:0,
+            background:'linear-gradient(135deg, rgba(14,165,233,0.12) 0%, rgba(14,165,233,0.06) 100%)',
+            border:'1px solid rgba(14,165,233,0.28)',
+            borderRadius:8, padding:'5px 13px',
+          }}>
+            <span style={{
+              width:6, height:6, borderRadius:'50%', flexShrink:0,
+              background:'#0ea5e9', display:'inline-block',
+              boxShadow:'0 0 5px rgba(14,165,233,0.8)',
+            }} />
+            <span style={{ fontSize:13, color:'var(--text-primary)', fontWeight:700, letterSpacing:'-0.2px', maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{script?.name}</span>
+          </div>
+
+          {/* ── Stats chips ── */}
+          {allRunsStats && (
+            <div style={{ display:'flex', alignItems:'center', gap:5, flexShrink:0 }}>
+              {/* Pass */}
+              <div style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 9px', borderRadius:20, background:'rgba(34,197,94,0.10)', border:'1px solid rgba(34,197,94,0.25)' }}>
+                <span style={{ width:5, height:5, borderRadius:'50%', background:'#22c55e', display:'inline-block', flexShrink:0 }} />
+                <span style={{ fontSize:12, fontWeight:700, color:'#22c55e', lineHeight:1 }}>{allRunsStats.pass}</span>
+              </div>
+              {/* Fail */}
+              <div style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 9px', borderRadius:20, background:'rgba(239,68,68,0.10)', border:'1px solid rgba(239,68,68,0.25)' }}>
+                <span style={{ width:5, height:5, borderRadius:'50%', background:'#ef4444', display:'inline-block', flexShrink:0 }} />
+                <span style={{ fontSize:12, fontWeight:700, color:'#ef4444', lineHeight:1 }}>{allRunsStats.fail}</span>
+              </div>
+              {/* Blocked */}
+              <div style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 9px', borderRadius:20, background:'rgba(245,158,11,0.10)', border:'1px solid rgba(245,158,11,0.25)' }}>
+                <span style={{ width:5, height:5, borderRadius:'50%', background:'#f59e0b', display:'inline-block', flexShrink:0 }} />
+                <span style={{ fontSize:12, fontWeight:700, color:'#f59e0b', lineHeight:1 }}>{allRunsStats.blocked}</span>
+              </div>
+              {/* Progress */}
+              <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 10px', borderRadius:20, background:'var(--bg-depth)', border:'1px solid var(--border-strong)' }}>
+                <span style={{ fontSize:12, fontWeight:600, color:'var(--text-secondary)', lineHeight:1 }}>{allRunsStats.done}/{allRunsStats.total}</span>
+                <div style={{ width:36, height:4, borderRadius:2, background:'var(--border-track)', overflow:'hidden' }}>
+                  <div style={{ height:'100%', width:`${allRunsStats.pct}%`, background:'linear-gradient(90deg,#0ea5e9,#0284c7)', borderRadius:2, transition:'width 0.3s' }} />
+                </div>
+                <span style={{ fontSize:11, fontWeight:600, color:'var(--accent)', lineHeight:1 }}>{allRunsStats.pct}%</span>
+              </div>
             </div>
           )}
-          {/* Search */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-depth)', border: '1px solid var(--border)', borderRadius: 7, padding: '4px 10px', marginLeft: 'auto' }}>
-            <span style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1 }}>⌕</span>
+
+          {/* ── Search ── */}
+          <div style={{ display:'flex', alignItems:'center', gap:7, background:'var(--bg-surface)', border:'1px solid var(--border-strong)', borderRadius:8, padding:'5px 11px', marginLeft:'auto', transition:'border-color 0.14s' }}
+            onFocus={() => {}} >
+            <span style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1, flexShrink:0 }}>⌕</span>
             <input
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               placeholder="Search cases..."
-              style={{ background: 'none', border: 'none', outline: 'none', fontSize: 12.5, color: 'var(--text-body)', width: 150, minWidth: 80 }}
+              style={{ background:'none', border:'none', outline:'none', fontSize:12.5, color:'var(--text-body)', width:140, minWidth:70 }}
+              onFocus={e => (e.currentTarget.parentElement!.style.borderColor = 'rgba(14,165,233,0.5)')}
+              onBlur={e  => (e.currentTarget.parentElement!.style.borderColor = 'var(--border-strong)')}
             />
             {searchQuery && (
               <button onClick={() => setSearchQuery('')}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)', padding: 0, lineHeight: 1 }}>✕</button>
+                style={{ background:'none', border:'none', cursor:'pointer', fontSize:11, color:'var(--text-muted)', padding:0, lineHeight:1, flexShrink:0 }}>✕</button>
             )}
           </div>
+
+          {/* ── Report ── */}
           {runs.length > 0 && (
             <button onClick={generatePDF}
               style={{
-                display:'flex', alignItems:'center', gap:6,
-                padding:'6px 14px',
-                background:'var(--bg-depth)', color:'var(--text-body)',
+                display:'flex', alignItems:'center', gap:5,
+                padding:'6px 13px',
+                background:'var(--bg-surface)', color:'var(--text-secondary)',
                 border:'1px solid var(--border-strong)', borderRadius:8,
-                fontSize:12.5, fontWeight:600, cursor:'pointer', transition:'all 0.14s',
+                fontSize:12.5, fontWeight:600, cursor:'pointer', transition:'all 0.14s', flexShrink:0,
               }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--accent-hover)' }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-body)' }}>
-              ↓ Report
+              onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--accent)'; e.currentTarget.style.background='var(--bg-depth)' }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.background='var(--bg-surface)' }}>
+              <span style={{ fontSize:11 }}>↓</span> Report
             </button>
           )}
+
+          {/* ── New Run ── */}
           <button onClick={() => setAddingRun(true)}
             style={{
               display:'flex', alignItems:'center', gap:7,
               padding:'7px 18px',
-              background:'linear-gradient(135deg,#22c55e 0%,#16a34a 50%,#15803d 100%)',
-              color:'white', border:'1px solid rgba(255,255,255,0.18)',
-              borderRadius:10,
+              background:'linear-gradient(135deg, #0ea5e9 0%, #0284c7 55%, #0369a1 100%)',
+              color:'white', border:'none',
+              borderRadius:9,
               fontSize:13, fontWeight:700, cursor:'pointer',
-              letterSpacing:'0.01em',
-              boxShadow:'0 4px 16px rgba(22,163,74,0.45), inset 0 1px 0 rgba(255,255,255,0.22)',
-              transition:'all 0.18s',
-              position:'relative', overflow:'hidden',
+              letterSpacing:'0.01em', flexShrink:0,
+              boxShadow:'0 3px 14px rgba(14,165,233,0.45), inset 0 1px 0 rgba(255,255,255,0.25)',
+              transition:'all 0.16s ease',
             }}
             onMouseEnter={e => {
-              e.currentTarget.style.boxShadow='0 6px 24px rgba(22,163,74,0.65), inset 0 1px 0 rgba(255,255,255,0.22)'
+              e.currentTarget.style.boxShadow='0 5px 22px rgba(14,165,233,0.65), inset 0 1px 0 rgba(255,255,255,0.25)'
               e.currentTarget.style.transform='translateY(-1px)'
-              e.currentTarget.style.background='linear-gradient(135deg,#4ade80 0%,#22c55e 50%,#16a34a 100%)'
+              e.currentTarget.style.background='linear-gradient(135deg, #38bdf8 0%, #0ea5e9 55%, #0284c7 100%)'
             }}
             onMouseLeave={e => {
-              e.currentTarget.style.boxShadow='0 4px 16px rgba(22,163,74,0.45), inset 0 1px 0 rgba(255,255,255,0.22)'
+              e.currentTarget.style.boxShadow='0 3px 14px rgba(14,165,233,0.45), inset 0 1px 0 rgba(255,255,255,0.25)'
               e.currentTarget.style.transform='none'
-              e.currentTarget.style.background='linear-gradient(135deg,#22c55e 0%,#16a34a 50%,#15803d 100%)'
+              e.currentTarget.style.background='linear-gradient(135deg, #0ea5e9 0%, #0284c7 55%, #0369a1 100%)'
             }}>
             <span style={{ fontSize:11, opacity:0.9 }}>▶</span>
             <span>New Run</span>

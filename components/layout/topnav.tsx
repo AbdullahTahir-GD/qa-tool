@@ -2,14 +2,14 @@
 import { usePathname } from 'next/navigation'
 import { useSidebar } from '@/components/providers/sidebar-context'
 import { useTheme } from '@/components/providers/theme-provider'
-import { peekCache, getProjects as getProjectsDB, getScripts as getScriptsDB, type Project, type Script } from '@/lib/db'
+import { peekCache, getProjects as getProjectsDB, getProjectById, getScripts as getScriptsDB, type Project, type Script } from '@/lib/db'
 import { useEffect, useState } from 'react'
 import { LayoutGrid, FolderKanban, Users, Layers, ChevronRight } from 'lucide-react'
 
-const PAGE_META: Record<string, { label: string; icon: React.ReactNode }> = {
-  '/dashboard': { label: 'Dashboard',   icon: <LayoutGrid  size={15} strokeWidth={2} /> },
+const PAGE_META: Record<string, { label: string; icon: React.ReactNode; color?: string }> = {
+  '/dashboard': { label: 'Dashboard',   icon: <LayoutGrid   size={15} strokeWidth={2} /> },
   '/projects':  { label: 'Projects',    icon: <FolderKanban size={15} strokeWidth={2} /> },
-  '/team':      { label: 'Team',        icon: <Users        size={15} strokeWidth={2} /> },
+  '/team':      { label: 'Team',        icon: <Users        size={15} strokeWidth={2} />, color: '#0ea5e9' },
 }
 
 export function TopnavContent() {
@@ -24,10 +24,22 @@ export function TopnavContent() {
       const projId = projMatch[1]
       const cached = peekCache<Project[]>('projects')
       if (cached) {
-        setProjectName(cached.find(p => p.id === projId)?.name ?? null)
+        const found = cached.find(p => p.id === projId)
+        if (found) {
+          setProjectName(found.name)
+        } else {
+          // Not in personal cache — could be a team project, fetch directly
+          getProjectById(projId).then(p => setProjectName(p?.name ?? null)).catch(() => setProjectName(null))
+        }
       } else {
         getProjectsDB().then(projects => {
-          setProjectName(projects.find(p => p.id === projId)?.name ?? null)
+          const found = projects.find(p => p.id === projId)
+          if (found) {
+            setProjectName(found.name)
+          } else {
+            // Not in personal projects — try fetching team project by ID
+            return getProjectById(projId).then(p => setProjectName(p?.name ?? null))
+          }
         }).catch(() => setProjectName(null))
       }
     } else {
@@ -101,9 +113,9 @@ export function TopnavContent() {
         <div style={{ display:'flex', alignItems:'center', gap:8, marginRight:14, paddingRight:14, borderRight:'1px solid var(--border-strong)' }}>
           <div style={{
             width:28, height:28, borderRadius:8, flexShrink:0,
-            background:'linear-gradient(135deg,#0ea5e9 0%,#6366f1 100%)',
+            background:'linear-gradient(135deg,#f59e0b 0%,#f97316 60%,#ef4444 100%)',
             display:'flex', alignItems:'center', justifyContent:'center',
-            boxShadow:'0 2px 8px rgba(99,102,241,0.45)',
+            boxShadow:'0 2px 8px rgba(249,115,22,0.50)',
           }}>
             <span style={{ color:'white', fontWeight:900, fontSize:14 }}>T</span>
           </div>
@@ -115,7 +127,7 @@ export function TopnavContent() {
       <div style={{ display:'flex', alignItems:'center', gap:5 }}>
         {meta ? (
           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-            <span style={{ color:'var(--accent)', opacity:0.85, display:'flex' }}>{meta.icon}</span>
+            <span style={{ color: meta.color ?? 'var(--accent)', opacity:0.90, display:'flex' }}>{meta.icon}</span>
             <span style={{ fontSize:14, fontWeight:700, color:'var(--text-primary)', letterSpacing:'-0.2px' }}>{meta.label}</span>
           </div>
         ) : isProject ? (
@@ -123,9 +135,11 @@ export function TopnavContent() {
             <Layers size={13} color="var(--text-dim)" strokeWidth={2} style={{ flexShrink:0, display:'block' }} />
             <span style={{ fontSize:13, color:'var(--text-dim)', fontWeight:500, lineHeight:1.5 }}>Projects</span>
             <ChevronRight size={13} color="var(--border-strong)" strokeWidth={2.5} style={{ flexShrink:0, display:'block' }} />
-            <span style={{ fontSize:13, fontWeight:700, color:'var(--text-primary)', lineHeight:1.5, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-              {projectName ?? '…'}
-            </span>
+            {projectName && (
+              <span style={{ fontSize:13, fontWeight:700, color:'var(--text-primary)', lineHeight:1.5, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {projectName}
+              </span>
+            )}
             {isScript && scriptName && (
               <>
                 <ChevronRight size={13} color="var(--border-strong)" strokeWidth={2.5} style={{ flexShrink:0, display:'block' }} />

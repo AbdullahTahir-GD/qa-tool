@@ -1,7 +1,8 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { getProjects, getPlans, getScripts, getTestRuns, savePlan, type Project, type TestPlan } from '@/lib/db'
+import { getProjects, getProjectById, getPlans, getScripts, getTestRuns, savePlan, invalidateCache, type Project, type TestPlan } from '@/lib/db'
+import { supabase } from '@/lib/supabase'
 import { Plus, ClipboardList, ChevronRight } from 'lucide-react'
 
 interface PlanMeta { scriptCount: number; runCount: number }
@@ -15,22 +16,81 @@ export default function ProjectPage() {
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
 
-  async function load() {
+  const load = useCallback(async () => {
     const projects = await getProjects()
-    const p = projects.find(x => x.id === id)
+    const p = projects.find(x => x.id === id) ?? await getProjectById(id)
     if (!p) { router.push('/projects'); return }
     setProject(p)
     const pl = await getPlans(id)
     setPlans(pl)
+    const metaList = await Promise.all(
+      pl.map(plan =>
+        Promise.all([getScripts(plan.id), getTestRuns(plan.id)]).then(([scripts, runs]) => ({
+          planId: plan.id, scriptCount: scripts.length, runCount: runs.length,
+        }))
+      )
+    )
     const meta: Record<string, PlanMeta> = {}
-    for (const plan of pl) {
-      const [scripts, runs] = await Promise.all([getScripts(plan.id), getTestRuns(plan.id)])
-      meta[plan.id] = { scriptCount: scripts.length, runCount: runs.length }
-    }
+    metaList.forEach(m => { meta[m.planId] = { scriptCount: m.scriptCount, runCount: m.runCount } })
     setPlanMeta(meta)
-  }
+  }, [id, router])
 
-  useEffect(() => { load() }, [id])
+  useEffect(() => { load() }, [load])
+
+  // Realtime — sync plan additions/deletions/renames from other team members instantly
+  useEffect(() => {
+    type PR = { id: string; project_id: string; name: string; created_at: string }
+    const channel = supabase
+      .channel(`project-plans-${id}`)
+      // New plan created by another user → add it instantly (zero scripts/runs yet)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'plans',
+        filter: `project_id=eq.${id}` }, ({ new: r }) => {
+        const plan: TestPlan = { id:(r as PR).id, projectId:(r as PR).project_id, name:(r as PR).name, createdAt:(r as PR).created_at }
+        setPlans(prev => prev.some(p=>p.id===plan.id) ? prev : [...prev, plan])
+        setPlanMeta(prev => ({ ...prev, [plan.id]: { scriptCount: 0, runCount: 0 } }))
+        invalidateCache(`plans:${id}`)
+      })
+      // Plan renamed
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'plans',
+        filter: `project_id=eq.${id}` }, ({ new: r }) => {
+        const plan: TestPlan = { id:(r as PR).id, projectId:(r as PR).project_id, name:(r as PR).name, createdAt:(r as PR).created_at }
+        setPlans(prev => prev.map(p => p.id===plan.id ? plan : p))
+        invalidateCache(`plans:${id}`)
+      })
+      // Plan deleted by another user
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'plans',
+        filter: `project_id=eq.${id}` }, ({ old: r }) => {
+        const planId = (r as { id: string }).id
+        setPlans(prev => prev.filter(p => p.id !== planId))
+        setPlanMeta(prev => { const n={...prev}; delete n[planId]; return n })
+        invalidateCache(`plans:${id}`)
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [id])
+
+  // Polling + visibility-based refresh — guarantees plan list stays in sync
+  // with other team members within a few seconds, even if Realtime is flaky
+  const forceReload = useCallback(async () => {
+    invalidateCache(`plans:${id}`)
+    await load()
+  }, [id, load])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') forceReload()
+    }, 5000)
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') forceReload()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onVisibility)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onVisibility)
+    }
+  }, [forceReload])
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()

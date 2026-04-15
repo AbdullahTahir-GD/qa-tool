@@ -38,7 +38,7 @@ export default function ProjectsPage() {
   if (projects.length === 0) {
     return (
       <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'70vh', gap:16 }}>
-        <div style={{ width:56, height:56, borderRadius:16, background:'linear-gradient(135deg,#0ea5e9,#6366f1)', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 8px 32px rgba(99,102,241,0.4)' }}>
+        <div style={{ width:56, height:56, borderRadius:16, background:'linear-gradient(135deg,#0ea5e9,#0284c7)', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:'0 8px 32px rgba(14,165,233,0.4)' }}>
           <span style={{ color:'white', fontSize:28, fontWeight:900 }}>T</span>
         </div>
         <h2 style={{ fontSize:22, fontWeight:800, color:'var(--text-primary)', margin:0, letterSpacing:'-0.4px' }}>Welcome to Testra</h2>
@@ -52,7 +52,7 @@ export default function ProjectsPage() {
 
       {/* Header */}
       <div style={{ textAlign:'center', marginBottom:36 }}>
-        <div style={{ width:48, height:48, borderRadius:14, background:'linear-gradient(135deg,#0ea5e9,#6366f1)', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px', boxShadow:'0 8px 28px rgba(99,102,241,0.38)' }}>
+        <div style={{ width:48, height:48, borderRadius:14, background:'linear-gradient(135deg,#0ea5e9,#0284c7)', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px', boxShadow:'0 8px 28px rgba(14,165,233,0.38)' }}>
           <span style={{ color:'white', fontSize:24, fontWeight:900 }}>T</span>
         </div>
         <h2 style={{ fontSize:26, fontWeight:800, color:'var(--text-primary)', margin:'0 0 8px', letterSpacing:'-0.5px' }}>Your Projects</h2>
@@ -78,7 +78,7 @@ export default function ProjectsPage() {
               }}
               onMouseEnter={e => {
                 e.currentTarget.style.borderColor = 'var(--border-accent)'
-                e.currentTarget.style.boxShadow = '0 4px 24px rgba(99,102,241,0.14)'
+                e.currentTarget.style.boxShadow = '0 4px 24px rgba(14,165,233,0.14)'
                 e.currentTarget.style.transform = 'translateY(-1px)'
               }}
               onMouseLeave={e => {
@@ -89,9 +89,9 @@ export default function ProjectsPage() {
               {/* Avatar */}
               <div style={{
                 width:40, height:40, borderRadius:10, flexShrink:0,
-                background:`linear-gradient(135deg, ${['#6366f1','#0ea5e9','#8b5cf6','#ec4899'][i % 4]} 0%, ${['#8b5cf6','#6366f1','#ec4899','#6366f1'][i % 4]} 100%)`,
+                background:`linear-gradient(135deg, ${['#0ea5e9','#0ea5e9','#0284c7','#ec4899'][i % 4]} 0%, ${['#0284c7','#0ea5e9','#ec4899','#0ea5e9'][i % 4]} 100%)`,
                 display:'flex', alignItems:'center', justifyContent:'center',
-                boxShadow:'0 2px 10px rgba(99,102,241,0.3)',
+                boxShadow:'0 2px 10px rgba(14,165,233,0.3)',
               }}>
                 <span style={{ color:'white', fontWeight:800, fontSize:16 }}>{p.name.charAt(0).toUpperCase()}</span>
               </div>

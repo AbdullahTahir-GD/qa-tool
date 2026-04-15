@@ -4,8 +4,8 @@ import { supabase } from './supabase'
 // DEV MODE — skip auth during development
 // Set to false when auth is implemented (Phase 5)
 // ─────────────────────────────────────────────────────
-export const DEV_MODE = true
-export const DEV_USER_ID = 'dev-user-00000001'
+export const DEV_MODE = false
+export const DEV_USER_ID = '00000000-0000-0000-0000-000000000001'
 
 function uid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36) }
 export function generateId() { return uid() }
@@ -14,24 +14,89 @@ function notify() { if (typeof window !== 'undefined') setTimeout(() => window.d
 // ─────────────────────────────────────────────────────
 // MODULE-LEVEL READ CACHE — survives React re-mounts so
 // back-navigation is instant. Invalidated on every write.
+// Also persisted to localStorage so browser refresh is instant too.
 // ─────────────────────────────────────────────────────
 const _c = new Map<string, { v: unknown; t: number }>()
-const _TTL = 300_000 // 5 minutes — reduces Supabase round trips on repeated navigation
+const _TTL = 300_000 // 5 minutes
+const _LS = 'testra_cache_' // localStorage key prefix
+
+function _lsGet<T>(k: string): T | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = localStorage.getItem(_LS + k)
+    if (!raw) return null
+    const { v, t } = JSON.parse(raw)
+    if (Date.now() - t > _TTL) { localStorage.removeItem(_LS + k); return null }
+    _c.set(k, { v, t }) // warm in-memory cache from disk
+    return v as T
+  } catch { return null }
+}
+function _lsSet(k: string, v: unknown, t: number) {
+  if (typeof window === 'undefined') return
+  try { localStorage.setItem(_LS + k, JSON.stringify({ v, t })) } catch {} // ignore quota errors
+}
+function _lsDel(k: string) {
+  if (typeof window === 'undefined') return
+  try { localStorage.removeItem(_LS + k) } catch {}
+}
+
 function _get<T>(k: string): T | null {
   const e = _c.get(k)
-  if (!e) return null
-  if (Date.now() - e.t > _TTL) { _c.delete(k); return null }
-  return e.v as T
+  if (e) {
+    if (Date.now() - e.t > _TTL) { _c.delete(k); _lsDel(k); return null }
+    return e.v as T
+  }
+  // In-memory miss — try localStorage (survives browser refresh)
+  return _lsGet<T>(k)
 }
-function _set(k: string, v: unknown) { _c.set(k, { v, t: Date.now() }) }
-function _del(...keys: string[]) { keys.forEach(k => _c.delete(k)) }
+function _set(k: string, v: unknown) {
+  const t = Date.now()
+  _c.set(k, { v, t })
+  _lsSet(k, v, t) // persist to disk
+}
+function _del(...keys: string[]) {
+  keys.forEach(k => { _c.delete(k); _lsDel(k) })
+}
+/** Exported cache invalidation — used by components to bust stale entries after Realtime events */
+export function invalidateCache(...keys: string[]) { _del(...keys) }
 
 /** Read from cache synchronously without triggering a fetch — for useState initializers */
 export function peekCache<T>(key: string): T | null { return _get<T>(key) }
 
-function getCurrentUserId(): string {
-  if (DEV_MODE) return DEV_USER_ID
-  throw new Error('Auth not implemented yet — keep DEV_MODE = true until Phase 5')
+let _lastUserId: string | null = null
+// Cache userId for 2 min — getSession() reads JWT locally (no network), expires and re-reads if stale
+let _userIdCache: { id: string; email: string; exp: number } | null = null
+
+/** Fast local session read — no Supabase server call. Use this in components instead of supabase.auth.getUser() */
+export async function getSessionUser(): Promise<{ id: string; email: string } | null> {
+  try { return await getCurrentUser() } catch { return null }
+}
+
+async function getCurrentUser(): Promise<{ id: string; email: string }> {
+  if (DEV_MODE) return { id: DEV_USER_ID, email: '' }
+  if (_userIdCache && Date.now() < _userIdCache.exp) return _userIdCache
+  // getSession() reads from local storage — no Supabase server round-trip
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.user) throw new Error('Not authenticated')
+  const { id, email = '' } = session.user
+  if (_lastUserId && _lastUserId !== id) {
+    _c.clear()
+    // Also wipe localStorage cache so previous user's data doesn't survive refresh
+    if (typeof window !== 'undefined') {
+      try {
+        Object.keys(localStorage)
+          .filter(k => k.startsWith(_LS))
+          .forEach(k => localStorage.removeItem(k))
+      } catch {}
+    }
+  }
+  _lastUserId = id
+  _userIdCache = { id, email, exp: Date.now() + 120_000 }
+  return { id, email }
+}
+
+async function getCurrentUserId(): Promise<string> {
+  return (await getCurrentUser()).id
 }
 
 // ─────────────────────────────────────────────────────
@@ -39,7 +104,7 @@ function getCurrentUserId(): string {
 // ─────────────────────────────────────────────────────
 export type TestStatus = 'pass' | 'fail' | 'blocked' | 'query' | 'exclude' | 'not_run'
 
-export interface Project { id: string; name: string; createdAt: string }
+export interface Project { id: string; name: string; createdAt: string; teamId?: string }
 export interface TestPlan { id: string; projectId: string; name: string; createdAt: string }
 export interface Folder { id: string; planId: string; name: string; order: number }
 export interface Script { id: string; planId: string; folderId: string; name: string; description: string; order: number }
@@ -70,42 +135,77 @@ export interface TestCaseDetail {
 // PROJECTS
 // ─────────────────────────────────────────────────────
 export async function getProjects(): Promise<Project[]> {
-  const cached = _get<Project[]>('projects')
+  const userId = await getCurrentUserId()
+  const cached = _get<Project[]>(`projects:${userId}`)
   if (cached) return cached
+  // Single JOIN query — eliminates the previous 2-round-trip sequential fetch
   const { data, error } = await supabase
-    .from('projects')
-    .select('*')
-    .order('created_at', { ascending: true })
+    .from('project_members')
+    .select('projects!inner(id, name, created_at, team_id)')
+    .eq('user_id', userId)
   if (error) { console.error('getProjects:', error); return [] }
-  const result = data.map(r => ({ id: r.id, name: r.name, createdAt: r.created_at }))
-  _set('projects', result)
+  const result: Project[] = (data ?? [])
+    .map((r: any) => r.projects)
+    .filter(Boolean)
+    .sort((a: any, b: any) => a.created_at.localeCompare(b.created_at))
+    .map((p: any) => ({ id: p.id, name: p.name, createdAt: p.created_at, teamId: p.team_id ?? undefined }))
+  _set(`projects:${userId}`, result)
   return result
 }
 
-export async function saveProject(name: string): Promise<Project> {
-  const userId = getCurrentUserId()
+export async function saveProject(name: string, teamId?: string): Promise<Project> {
+  const userId = await getCurrentUserId()
   const id = uid()
-  const { error } = await supabase.from('projects').insert({ id, name })
+  const { error } = await supabase.from('projects').insert({ id, name, team_id: teamId || null })
   if (error) throw error
-  await supabase.from('project_members').insert({
-    id: uid(), project_id: id, user_id: userId, role: 'admin',
-  })
-  _del('projects')
+  if (!teamId) {
+    await supabase.from('project_members').insert({
+      id: uid(), project_id: id, user_id: userId, role: 'admin',
+    })
+  }
+  _del(`projects:${userId}`)
+  if (teamId) _del(`team-projects:${teamId}`)
   notify()
-  return { id, name, createdAt: new Date().toISOString() }
+  return { id, name, createdAt: new Date().toISOString(), teamId }
+}
+
+export async function getTeamProjects(teamId: string): Promise<Project[]> {
+  const cached = _get<Project[]>(`team-projects:${teamId}`)
+  if (cached) return cached
+  const { data, error } = await supabase
+    .from('projects').select('*')
+    .eq('team_id', teamId)
+    .order('created_at', { ascending: true })
+  if (error) { console.error('getTeamProjects:', error); return [] }
+  const result: Project[] = (data ?? []).map((r: any) => ({ id: r.id, name: r.name, createdAt: r.created_at, teamId }))
+  _set(`team-projects:${teamId}`, result)
+  return result
+}
+
+/** Fetch a single project by ID — works for both personal and team projects */
+export async function getProjectById(id: string): Promise<Project | null> {
+  const cached = _get<Project>(`project:${id}`)
+  if (cached) return cached
+  const { data, error } = await supabase.from('projects').select('*').eq('id', id).single()
+  if (error || !data) return null
+  const result: Project = { id: data.id, name: data.name, createdAt: data.created_at, teamId: data.team_id ?? undefined }
+  _set(`project:${id}`, result)
+  return result
 }
 
 export async function deleteProject(id: string): Promise<void> {
+  const userId = await getCurrentUserId()
   const { error } = await supabase.from('projects').delete().eq('id', id)
   if (error) throw error
-  _del('projects')
+  _del(`projects:${userId}`)
   notify()
 }
 
 export async function updateProject(id: string, name: string): Promise<void> {
+  const userId = await getCurrentUserId()
   const { error } = await supabase.from('projects').update({ name }).eq('id', id)
   if (error) throw error
-  _del('projects')
+  _del(`projects:${userId}`)
   notify()
 }
 
@@ -535,54 +635,6 @@ export async function saveDetail(rowId: string, d: TestCaseDetail): Promise<void
   if (error) throw error
 }
 
-// ─────────────────────────────────────────────────────
-// STATS
-// ─────────────────────────────────────────────────────
-export async function getScriptStats(scriptId: string, runId: string) {
-  const [allRows, results] = await Promise.all([getRows(scriptId), getResults(runId)])
-  const rows = allRows.filter(r => r.type === 'case')
-  const resultMap = new Map(results.map(r => [r.rowId, r.status]))
-  const pass    = rows.filter(r => resultMap.get(r.id) === 'pass').length
-  const fail    = rows.filter(r => resultMap.get(r.id) === 'fail').length
-  const blocked = rows.filter(r => resultMap.get(r.id) === 'blocked').length
-  const query   = rows.filter(r => resultMap.get(r.id) === 'query').length
-  const exclude = rows.filter(r => resultMap.get(r.id) === 'exclude').length
-  const done    = pass + fail + blocked + query
-  const total   = rows.length - exclude
-  const pct     = total > 0 ? Math.round((pass / total) * 100) : 0
-  return { pass, fail, blocked, query, exclude, done, total, pct }
-}
-
-export async function getFolderStats(planId: string, folderId: string, runId: string) {
-  const scripts = (await getScripts(planId)).filter(s => s.folderId === folderId)
-  const allStats = await Promise.all(scripts.map(s => getScriptStats(s.id, runId)))
-  let pass=0, fail=0, blocked=0, query=0, done=0, total=0
-  allStats.forEach(st => { pass+=st.pass; fail+=st.fail; blocked+=st.blocked; query+=st.query; done+=st.done; total+=st.total })
-  const pct = total > 0 ? Math.round((pass / total) * 100) : 0
-  return { pass, fail, blocked, query, done, total, pct }
-}
-
-export async function getScriptStatsAllRuns(planId: string, scriptId: string) {
-  const runs = await getTestRuns(planId)
-  if (runs.length === 0) {
-    const rows = (await getRows(scriptId)).filter(r => r.type === 'case')
-    return { pass:0, fail:0, blocked:0, query:0, exclude:0, done:0, total:rows.length, pct:0 }
-  }
-  const allStats = await Promise.all(runs.map(run => getScriptStats(scriptId, run.id)))
-  let pass=0, fail=0, blocked=0, query=0, exclude=0, done=0, total=0
-  allStats.forEach(st => { pass+=st.pass; fail+=st.fail; blocked+=st.blocked; query+=st.query; exclude+=st.exclude; done+=st.done; total+=st.total })
-  const pct = total > 0 ? Math.round((pass / total) * 100) : 0
-  return { pass, fail, blocked, query, exclude, done, total, pct }
-}
-
-export async function getFolderStatsAllRuns(planId: string, folderId: string) {
-  const scripts = (await getScripts(planId)).filter(s => s.folderId === folderId)
-  const allStats = await Promise.all(scripts.map(s => getScriptStatsAllRuns(planId, s.id)))
-  let pass=0, fail=0, blocked=0, query=0, done=0, total=0
-  allStats.forEach(st => { pass+=st.pass; fail+=st.fail; blocked+=st.blocked; query+=st.query; done+=st.done; total+=st.total })
-  const pct = total > 0 ? Math.round((pass / total) * 100) : 0
-  return { pass, fail, blocked, query, done, total, pct }
-}
 
 // ─────────────────────────────────────────────────────
 // PURE STATS — computed from already-loaded data, zero Supabase calls
@@ -613,4 +665,192 @@ export function sumStats(statsArray: Stats[]): Stats {
   }
   const pct = total > 0 ? Math.round((pass / total) * 100) : 0
   return { pass, fail, blocked, query, exclude, done, total, pct }
+}
+
+// ─────────────────────────────────────────────────────
+// TEAMS
+// ─────────────────────────────────────────────────────
+export interface Team {
+  id: string
+  name: string
+  createdAt: string
+}
+
+export interface TeamMember {
+  id: string
+  teamId: string
+  userId: string
+  email: string
+  role: 'owner' | 'member'
+  joinedAt: string
+}
+
+export interface TeamInvite {
+  id: string
+  teamId: string
+  invitedEmail: string
+  invitedBy: string
+  acceptedAt: string | null
+  createdAt: string
+}
+
+/** Get all teams the current user belongs to */
+export async function getMyTeams(): Promise<Team[]> {
+  const userId = await getCurrentUserId()
+  const cached = _get<Team[]>(`teams:${userId}`)
+  if (cached) return cached
+  // Single JOIN query — was previously 2 sequential round trips
+  const { data, error } = await supabase
+    .from('team_members')
+    .select('teams!inner(id, name, created_at)')
+    .eq('user_id', userId)
+  if (error) { console.error('getMyTeams:', error); return [] }
+  const result: Team[] = (data ?? [])
+    .map((r: any) => r.teams)
+    .filter(Boolean)
+    .sort((a: any, b: any) => a.created_at.localeCompare(b.created_at))
+    .map((t: any) => ({ id: t.id, name: t.name, createdAt: t.created_at }))
+  _set(`teams:${userId}`, result)
+  return result
+}
+
+/** Create a new team and add the current user as owner */
+export async function createTeam(name: string): Promise<Team> {
+  const user = await getCurrentUser()
+  if (!user.id) throw new Error('Not authenticated')
+  const { data, error: teamErr } = await supabase
+    .from('teams').insert({ name }).select().single()
+  if (teamErr) throw teamErr
+  const teamId = data.id
+  const { error: memberErr } = await supabase.from('team_members').insert({
+    team_id: teamId, user_id: user.id, role: 'owner', email: user.email ?? '',
+  })
+  if (memberErr) throw memberErr
+  _del(`teams:${user.id}`, `members:${teamId}`)
+  notify()
+  return { id: teamId, name, createdAt: data.created_at }
+}
+
+/** Get all members of a team */
+export async function getTeamMembers(teamId: string): Promise<TeamMember[]> {
+  const cached = _get<TeamMember[]>(`members:${teamId}`)
+  if (cached) return cached
+  const { data, error } = await supabase
+    .from('team_members')
+    .select('*')
+    .eq('team_id', teamId)
+    .order('joined_at', { ascending: true })
+  if (error) { console.error('getTeamMembers:', error); return [] }
+  const result: TeamMember[] = (data ?? []).map((r: any) => ({
+    id: r.id, teamId: r.team_id, userId: r.user_id,
+    email: r.email ?? '', role: r.role, joinedAt: r.joined_at,
+  }))
+  _set(`members:${teamId}`, result)
+  return result
+}
+
+/** Remove a member from a team (owner only) */
+export async function removeTeamMember(teamId: string, memberId: string): Promise<void> {
+  const { error } = await supabase.from('team_members').delete().eq('id', memberId)
+  if (error) throw error
+  _del(`members:${teamId}`)
+  notify()
+}
+
+/** Get pending invites for a team */
+export async function getTeamInvites(teamId: string): Promise<TeamInvite[]> {
+  const cached = _get<TeamInvite[]>(`invites:${teamId}`)
+  if (cached) return cached
+  const { data, error } = await supabase
+    .from('team_invites')
+    .select('*')
+    .eq('team_id', teamId)
+    .is('accepted_at', null)
+    .order('created_at', { ascending: false })
+  if (error) { console.error('getTeamInvites:', error); return [] }
+  const result = (data ?? []).map((r: any) => ({
+    id: r.id, teamId: r.team_id, invitedEmail: r.invited_email,
+    invitedBy: r.invited_by, acceptedAt: r.accepted_at, createdAt: r.created_at,
+  }))
+  _set(`invites:${teamId}`, result)
+  return result
+}
+
+/** Invite someone to a team by email */
+export async function inviteToTeam(teamId: string, email: string): Promise<void> {
+  const userId = await getCurrentUserId()
+  const normalizedEmail = email.toLowerCase().trim()
+
+  // Delete any existing invite for this email+team (e.g. previously accepted then removed)
+  // so we can cleanly re-invite without hitting a unique-constraint violation
+  await supabase.from('team_invites')
+    .delete()
+    .eq('team_id', teamId)
+    .eq('invited_email', normalizedEmail)
+
+  const { error } = await supabase.from('team_invites').insert({
+    team_id: teamId, invited_email: normalizedEmail,
+    invited_by: userId,
+  })
+  if (error) throw error
+  _del(`invites:${teamId}`)
+}
+
+/** Cancel a pending invite */
+export async function cancelInvite(inviteId: string, teamId: string): Promise<void> {
+  const { error } = await supabase.from('team_invites').delete().eq('id', inviteId)
+  if (error) throw error
+  _del(`invites:${teamId}`)
+}
+
+/** Update a team's name (owner only) */
+export async function updateTeam(teamId: string, name: string): Promise<void> {
+  const userId = await getCurrentUserId()
+  const { error } = await supabase.from('teams').update({ name }).eq('id', teamId)
+  if (error) throw error
+  _del(`teams:${userId}`)
+  notify()
+}
+
+/** Get pending invites addressed to the current user's email */
+export async function getPendingInvitesForMe(): Promise<(TeamInvite & { teamName: string })[]> {
+  const { email } = await getCurrentUser()
+  if (!email) return []
+  // Single JOIN query — was previously 2 sequential round trips
+  const { data, error } = await supabase
+    .from('team_invites')
+    .select('*, teams!inner(name)')
+    .eq('invited_email', email.toLowerCase())
+    .is('accepted_at', null)
+  if (error || !data || data.length === 0) return []
+  return data.map((r: any) => ({
+    id: r.id, teamId: r.team_id, invitedEmail: r.invited_email,
+    invitedBy: r.invited_by, acceptedAt: r.accepted_at, createdAt: r.created_at,
+    teamName: r.teams?.name ?? 'Unknown Team',
+  }))
+}
+
+/** Delete a team (owner only) — cascades to members + invites */
+export async function deleteTeam(teamId: string): Promise<void> {
+  const userId = await getCurrentUserId()
+  const { error } = await supabase.from('teams').delete().eq('id', teamId)
+  if (error) throw error
+  _del(`teams:${userId}`, `members:${teamId}`, `team-projects:${teamId}`)
+  notify()
+}
+
+/** Accept a team invite — adds current user to team_members */
+export async function acceptInvite(inviteId: string, teamId: string): Promise<void> {
+  const user = await getCurrentUser()
+  const { error: memberErr } = await supabase.from('team_members').insert({
+    team_id: teamId, user_id: user.id, role: 'member', email: user.email ?? '',
+  })
+  if (memberErr && !memberErr.message.includes('duplicate')) throw memberErr
+  const { error } = await supabase
+    .from('team_invites')
+    .update({ accepted_at: new Date().toISOString() })
+    .eq('id', inviteId)
+  if (error) throw error
+  _del(`teams:${user.id}`, `invites:${teamId}`, `members:${teamId}`)
+  notify()
 }
