@@ -1,4 +1,5 @@
 'use client'
+import { Suspense } from 'react'
 import { SidebarContent } from '@/components/layout/sidebar'
 import { TopnavContent } from '@/components/layout/topnav'
 import { SidebarProvider, useSidebar } from '@/components/providers/sidebar-context'
@@ -41,7 +42,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         zIndex: 40,
       }}>
         <div style={{ width: 'var(--sidebar-width)', height: '100%' }}>
-          <SidebarContent />
+          <Suspense><SidebarContent /></Suspense>
         </div>
       </aside>
 
@@ -65,7 +66,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           position: 'sticky', top: 0, zIndex: 30,
           boxShadow: '0 1px 0 var(--border), 0 4px 16px rgba(0,0,0,0.18)',
         }}>
-          <TopnavContent />
+          <Suspense><TopnavContent /></Suspense>
         </header>
 
         {/* Page content */}
