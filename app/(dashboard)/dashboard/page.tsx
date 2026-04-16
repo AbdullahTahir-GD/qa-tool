@@ -1,4 +1,5 @@
 'use client'
+export const dynamic = 'force-dynamic'
 import { useEffect, useState, useCallback } from 'react'
 import { getProjects, getPlans, getRows, getScripts, getTestRuns } from '@/lib/db'
 
