@@ -1,6 +1,5 @@
 'use client'
-export const dynamic = 'force-dynamic'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createPortal } from 'react-dom'
 import {
@@ -39,6 +38,14 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 type CtxMenu = { x: number; y: number; type: 'team'; team: Team }
 
 export default function TeamPage() {
+  return (
+    <Suspense fallback={null}>
+      <TeamPageInner />
+    </Suspense>
+  )
+}
+
+function TeamPageInner() {
   const [teams, setTeams]             = useState<Team[]>([])
   const [activeTeam, setActiveTeam]   = useState<Team | null>(null)
   const [members, setMembers]         = useState<TeamMember[]>([])

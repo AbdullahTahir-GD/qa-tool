@@ -1,5 +1,4 @@
 'use client'
-export const dynamic = 'force-dynamic'
 import { Suspense } from 'react'
 import { SidebarContent } from '@/components/layout/sidebar'
 import { TopnavContent } from '@/components/layout/topnav'

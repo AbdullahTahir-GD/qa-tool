@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { getProjects, getPlans, getFolders, getScripts, getTestRuns, deleteProject, getMyTeams, getTeamProjects, getSessionUser, invalidateCache, type Project, type Team } from '@/lib/db'
@@ -24,6 +24,14 @@ function teamPalette(name: string) {
 }
 
 export function SidebarContent() {
+  return (
+    <Suspense fallback={null}>
+      <SidebarInner />
+    </Suspense>
+  )
+}
+
+function SidebarInner() {
   const [projects, setProjects] = useState<Project[]>([])
   const [teams, setTeams] = useState<Team[]>([])
   const [teamProjects, setTeamProjects] = useState<Record<string, Project[]>>({})
