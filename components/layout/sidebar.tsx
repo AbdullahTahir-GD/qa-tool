@@ -2,7 +2,7 @@
 import { useEffect, useState, useRef, useCallback, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
-import { getProjects, getPlans, getFolders, getScripts, getTestRuns, deleteProject, getMyTeams, getTeamProjects, getSessionUser, invalidateCache, type Project, type Team } from '@/lib/db'
+import { getProjects, getPlans, getFolders, getScripts, getTestRuns, deleteProject, updateProject, getMyTeams, getTeamProjects, getSessionUser, invalidateCache, type Project, type Team } from '@/lib/db'
 import { supabase } from '@/lib/supabase'
 import { FolderKanban, Plus, HelpCircle, X, LogOut, KeyRound, ChevronUp, ChevronRight, Users } from 'lucide-react'
 import { useSidebar } from '@/components/providers/sidebar-context'
@@ -36,6 +36,9 @@ function SidebarInner() {
   const [teams, setTeams] = useState<Team[]>([])
   const [teamProjects, setTeamProjects] = useState<Record<string, Project[]>>({})
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; projectId: string } | null>(null)
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const renameInputRef = useRef<HTMLInputElement>(null)
   const [showHelp, setShowHelp] = useState(false)
   const [userEmail, setUserEmail] = useState('')
   const [personalExpanded, setPersonalExpanded] = useState(true)
@@ -176,6 +179,20 @@ function SidebarInner() {
     )
     return () => { channels.forEach(c => supabase.removeChannel(c)) }
   }, [teams, refresh])
+
+  const commitRename = (projectId: string, newName: string) => {
+    const trimmed = newName.trim()
+    if (trimmed) {
+      setProjects(prev => prev.map(p => p.id === projectId ? { ...p, name: trimmed } : p))
+      setTeamProjects(prev => {
+        const next = { ...prev }
+        for (const tid in next) next[tid] = next[tid].map(p => p.id === projectId ? { ...p, name: trimmed } : p)
+        return next
+      })
+      updateProject(projectId, trimmed).then(() => refresh()).catch(console.error)
+    }
+    setRenamingProjectId(null)
+  }
 
   const handleSignOut = async () => {
     // Clear persisted cache so next user doesn't see stale data
@@ -318,12 +335,6 @@ function SidebarInner() {
           const isActive = pathname.includes('/projects/' + p.id)
           return (
             <div key={p.id}
-              onClick={async () => {
-                const plans = await getPlans(p.id)
-                if (plans.length >= 1) router.push(`/projects/${p.id}/plan/${plans[0].id}`)
-                else router.push('/projects/' + p.id)
-                if (isMobile) close()
-              }}
               onContextMenu={e => { e.preventDefault(); const x=Math.min(e.clientX,window.innerWidth-180-8); const y=Math.min(e.clientY,window.innerHeight-80-8); setCtxMenu({ x, y, projectId: p.id }) }}
               style={{
                 position: 'relative', padding: '9px 20px 9px 22px', fontSize: 13.5, cursor: 'pointer',
@@ -332,7 +343,8 @@ function SidebarInner() {
                 background: isActive ? 'linear-gradient(90deg, rgba(14,165,233,0.18) 0%, rgba(14,165,233,0.06) 100%)' : 'transparent',
                 borderLeft: isActive ? '3px solid #0ea5e9' : '3px solid transparent',
                 userSelect: 'none', transition: 'all 0.14s', lineHeight: 1.45,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                overflow: renamingProjectId === p.id ? 'visible' : 'hidden',
+                textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}
               onMouseEnter={e => {
                 if (!isActive) { e.currentTarget.style.background = 'rgba(255,255,255,0.055)'; e.currentTarget.style.color = 'rgba(255,255,255,0.88)' }
@@ -343,8 +355,29 @@ function SidebarInner() {
                 if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.55)' }
                 if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current)
               }}
+              onClick={async (e) => {
+                if (renamingProjectId === p.id) return
+                const plans = await getPlans(p.id)
+                if (plans.length >= 1) router.push(`/projects/${p.id}/plan/${plans[0].id}`)
+                else router.push('/projects/' + p.id)
+                if (isMobile) close()
+              }}
               title={p.name}>
-              {p.name}
+              {renamingProjectId === p.id ? (
+                <input
+                  ref={renameInputRef}
+                  autoFocus
+                  value={renameValue}
+                  onChange={e => setRenameValue(e.target.value)}
+                  onBlur={() => commitRename(p.id, renameValue)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') { e.preventDefault(); commitRename(p.id, renameValue) }
+                    if (e.key === 'Escape') setRenamingProjectId(null)
+                  }}
+                  onClick={e => e.stopPropagation()}
+                  style={{ width: '100%', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(14,165,233,0.5)', borderRadius: 5, padding: '2px 7px', fontSize: 13, color: '#fff', outline: 'none', boxSizing: 'border-box' }}
+                />
+              ) : p.name}
             </div>
           )
         })}
@@ -444,12 +477,6 @@ function SidebarInner() {
                         const isActive = pathname.includes('/projects/' + p.id)
                         return (
                           <div key={p.id}
-                            onClick={async () => {
-                              const plans = await getPlans(p.id)
-                              if (plans.length >= 1) router.push(`/projects/${p.id}/plan/${plans[0].id}`)
-                              else router.push('/projects/' + p.id)
-                              if (isMobile) close()
-                            }}
                             onContextMenu={e => { e.preventDefault(); const x=Math.min(e.clientX,window.innerWidth-180-8); const y=Math.min(e.clientY,window.innerHeight-80-8); setCtxMenu({ x, y, projectId: p.id }) }}
                             style={{
                               padding: '7px 20px 7px 54px', fontSize: 13, cursor: 'pointer',
@@ -457,12 +484,34 @@ function SidebarInner() {
                               fontWeight: isActive ? 600 : 400,
                               background: isActive ? 'linear-gradient(90deg,rgba(14,165,233,0.18) 0%,rgba(14,165,233,0.06) 100%)' : 'transparent',
                               borderLeft: isActive ? '3px solid #0284c7' : '3px solid transparent',
-                              transition: 'all 0.14s', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              transition: 'all 0.14s',
+                              overflow: renamingProjectId === p.id ? 'visible' : 'hidden',
+                              textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                             }}
                             onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'rgba(255,255,255,0.85)' } }}
                             onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.50)' } }}
+                            onClick={async (e) => {
+                              if (renamingProjectId === p.id) return
+                              const plans = await getPlans(p.id)
+                              if (plans.length >= 1) router.push(`/projects/${p.id}/plan/${plans[0].id}`)
+                              else router.push('/projects/' + p.id)
+                              if (isMobile) close()
+                            }}
                             title={p.name}>
-                            {p.name}
+                            {renamingProjectId === p.id ? (
+                              <input
+                                autoFocus
+                                value={renameValue}
+                                onChange={e => setRenameValue(e.target.value)}
+                                onBlur={() => commitRename(p.id, renameValue)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') { e.preventDefault(); commitRename(p.id, renameValue) }
+                                  if (e.key === 'Escape') setRenamingProjectId(null)
+                                }}
+                                onClick={e => e.stopPropagation()}
+                                style={{ width: '100%', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(14,165,233,0.5)', borderRadius: 5, padding: '2px 7px', fontSize: 13, color: '#fff', outline: 'none', boxSizing: 'border-box' }}
+                              />
+                            ) : p.name}
                           </div>
                         )
                       })
@@ -487,8 +536,34 @@ function SidebarInner() {
               position: 'fixed', left: ctxMenu.x, top: ctxMenu.y,
               background: '#0d1b2e', border: '1px solid rgba(14,165,233,0.20)',
               borderRadius: 8, boxShadow: '0 8px 32px rgba(0,0,0,0.55)',
-              zIndex: 9999, minWidth: 160, overflow: 'hidden',
+              zIndex: 9999, minWidth: 170, overflow: 'hidden',
             }}>
+            <button
+              onMouseDown={e => {
+                e.stopPropagation()
+                e.preventDefault() // prevent blur on input that may already be focused
+                const proj = [...projects, ...Object.values(teamProjects).flat()].find(p => p.id === pid)
+                const name = proj?.name ?? ''
+                setCtxMenu(null)
+                // Delay so the menu-close click event fully finishes before input mounts.
+                // Without this, the mouseup from clicking "Rename" immediately blurs
+                // the newly-focused input, triggering onBlur → commitRename → input disappears.
+                setTimeout(() => {
+                  setRenameValue(name)
+                  setRenamingProjectId(pid)
+                }, 80)
+              }}
+              style={{
+                display: 'block', width: '100%', padding: '10px 16px',
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: 'rgba(255,255,255,0.80)', fontSize: 13, fontWeight: 500,
+                textAlign: 'left', transition: 'background 0.12s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
+              ✏️ Rename Project
+            </button>
+            <div style={{ height: 1, background: 'rgba(255,255,255,0.07)', margin: '2px 0' }} />
             <button
               onMouseDown={e => { e.stopPropagation(); handleDeleteProject(pid) }}
               style={{

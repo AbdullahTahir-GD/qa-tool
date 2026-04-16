@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { useParams, useRouter } from 'next/navigation'
 import {
   getProjects, getProjectById, getPlans, getFolders, saveFolder, deleteFolder, updateFolder,
-  getScripts, saveScript, deleteScript, duplicateScript, duplicateFolder,
+  getScripts, saveScript, deleteScript, updateScript, duplicateScript, duplicateFolder,
   getTestRuns, getRows, getResults, computeStats, sumStats, peekCache, invalidateCache,
   type Project, type TestPlan, type Folder, type Script, type TestRun, type TestRow, type TestResult, type Stats
 } from '@/lib/db'
@@ -101,6 +101,8 @@ export default function PlanPage() {
   // inline editing
   const [editingFolderId, setEditingFolderId] = useState<string|null>(null)
   const [editFolderName, setEditFolderName] = useState('')
+  const [editingScriptId, setEditingScriptId] = useState<string|null>(null)
+  const [editScriptName, setEditScriptName] = useState('')
   const [addingScriptInFolder, setAddingScriptInFolder] = useState<string|null>(null)
   const [newScriptName, setNewScriptName] = useState('')
   const [addingFolder, setAddingFolder] = useState(false)
@@ -359,6 +361,15 @@ export default function PlanPage() {
     setScriptMenu({ x, y, scriptId }); setFolderMenu(null)
   }
 
+  const commitScriptRename = (scriptId: string, newName: string) => {
+    const trimmed = newName.trim()
+    if (trimmed) {
+      setScripts(prev => prev.map(s => s.id === scriptId ? { ...s, name: trimmed } : s))
+      updateScript(planId, scriptId, { name: trimmed }).catch(console.error)
+    }
+    setEditingScriptId(null)
+  }
+
   const handleAddScript = (folderId: string) => {
     setAddingScriptInFolder(folderId)
     setFolderMenu(null)
@@ -581,11 +592,26 @@ export default function PlanPage() {
                           ? <span style={{ fontSize:12, animation:'spin 1s linear infinite', display:'inline-block', flexShrink:0 }}>⟳</span>
                           : <FileText size={14} color="#0ea5e9" strokeWidth={1.5} style={{ flexShrink:0, opacity:0.75 }} />
                         }
-                        <span style={{ fontSize:14, color: isDuplicating ? 'var(--text-muted)' : 'var(--text-body)', fontWeight:500, flex:1, transition:'color 0.1s', fontStyle: isDuplicating ? 'italic' : 'normal' }}
-                          onMouseEnter={e => { if (!isDuplicating) e.currentTarget.style.color = 'var(--text-primary)' }}
-                          onMouseLeave={e => { if (!isDuplicating) e.currentTarget.style.color = 'var(--text-body)' }}>
-                          {script.name}{isDuplicating ? '' : ''}
-                        </span>
+                        {editingScriptId === script.id ? (
+                          <input
+                            autoFocus
+                            value={editScriptName}
+                            onChange={e => setEditScriptName(e.target.value)}
+                            onBlur={() => commitScriptRename(script.id, editScriptName)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') { e.preventDefault(); commitScriptRename(script.id, editScriptName) }
+                              if (e.key === 'Escape') setEditingScriptId(null)
+                            }}
+                            onClick={e => e.stopPropagation()}
+                            style={{ flex:1, background:'var(--bg-surface)', border:'1px solid var(--accent)', borderRadius:5, padding:'2px 8px', fontSize:14, fontWeight:500, color:'var(--text-primary)', outline:'none' }}
+                          />
+                        ) : (
+                          <span style={{ fontSize:14, color: isDuplicating ? 'var(--text-muted)' : 'var(--text-body)', fontWeight:500, flex:1, transition:'color 0.1s', fontStyle: isDuplicating ? 'italic' : 'normal' }}
+                            onMouseEnter={e => { if (!isDuplicating) e.currentTarget.style.color = 'var(--text-primary)' }}
+                            onMouseLeave={e => { if (!isDuplicating) e.currentTarget.style.color = 'var(--text-body)' }}>
+                            {script.name}{isDuplicating ? '' : ''}
+                          </span>
+                        )}
 
                         {/* All-runs stats for script */}
                         {runs.length > 0 && !isDuplicating && (
@@ -665,6 +691,7 @@ export default function PlanPage() {
       {scriptMenu && createPortal(
         <div ref={scriptMenuRef} style={{ position:'fixed', left:scriptMenu.x, top:scriptMenu.y, background:'var(--bg-surface)', border:'1px solid var(--border-strong)', borderRadius:10, padding:'6px 0', minWidth:200, zIndex:9999, boxShadow:'0 8px 32px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.12)' }}>
           <CtxItem label="Open script" onClick={() => { const s=scripts.find(x=>x.id===scriptMenu.scriptId); if(s) router.push(`/projects/${id}/plan/${planId}/script/${s.id}`); setScriptMenu(null) }} />
+          <CtxItem label="Rename script" onClick={() => { const s=scripts.find(x=>x.id===scriptMenu.scriptId); if(s){ setEditingScriptId(s.id); setEditScriptName(s.name) } setScriptMenu(null) }} />
           <CtxItem label="Duplicate script" onClick={async () => {
             const src = scripts.find(s => s.id === scriptMenu.scriptId)
             setScriptMenu(null)

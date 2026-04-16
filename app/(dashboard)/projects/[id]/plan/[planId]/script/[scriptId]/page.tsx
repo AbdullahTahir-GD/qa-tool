@@ -380,14 +380,51 @@ export default function ScriptPage() {
   resultsMapRef.current = resultsMap
   const detailRowIdRef = useRef(detailRowId)
   detailRowIdRef.current = detailRowId
-  // saveDetailTimerRef lives inside <DetailPanel> now
+  // Refs for surgical stats updates from Realtime
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  const perRunStatsRef = useRef(perRunStats)
+  perRunStatsRef.current = perRunStats
+  const allRunsStatsRef = useRef(allRunsStats)
+  allRunsStatsRef.current = allRunsStats
+  const topStatsRef = useRef(topStats)
+  topStatsRef.current = topStats
 
-  const reload = useCallback(async (currentActiveRunId?: string | null) => {
+  // reload() — two modes:
+  //   skipResults=false (default): full reload including results (initial load, explicit refreshes)
+  //   skipResults=true: reload rows/runs only, recompute stats from current resultsMap in memory —
+  //     used by polling and Realtime row events so resultsMap is NEVER wiped mid-session
+  const reload = useCallback(async (currentActiveRunId?: string | null, skipResults = false) => {
     const [allScripts, rws, rns] = await Promise.all([getScripts(planId), getRows(scriptId), getTestRuns(planId)])
     setScript(allScripts.find(s => s.id === scriptId) || null)
     setRows(rws)
     setRuns(rns)
-    // Fetch all runs' results in parallel — was sequential
+
+    const runStillExists = currentActiveRunId ? rns.some(r => r.id === currentActiveRunId) : false
+    if (currentActiveRunId && !runStillExists) {
+      setActiveRunId(null)
+      setActiveRowId(null)
+    }
+    const aRunId = (currentActiveRunId && runStillExists) ? currentActiveRunId : null
+    const caseRowsLoaded = rws.filter(r => r.type === 'case')
+
+    if (skipResults) {
+      // Recompute stats from the in-memory resultsMap — no DB fetch, no flash
+      const currentMap = resultsMapRef.current
+      if (rns.length > 0) {
+        const prs: Record<string, Stats> = {}
+        rns.forEach(run => { prs[run.id] = computeStats(caseRowsLoaded, Object.values(currentMap[run.id] || {})) })
+        setPerRunStats(prs)
+        setAllRunsStats(sumStats(Object.values(prs)))
+        if (aRunId) setTopStats(computeStats(caseRowsLoaded, Object.values(currentMap[aRunId] || {})))
+        else setTopStats(null)
+      } else {
+        setPerRunStats({}); setAllRunsStats(null); setTopStats(null)
+      }
+      return
+    }
+
+    // Full results fetch — only on initial load or explicit full reload
     const map: Record<string, Record<string, TestResult>> = {}
     if (rns.length > 0) {
       const allResults = await Promise.all(rns.map(r => getResults(r.id)))
@@ -397,15 +434,6 @@ export default function ScriptPage() {
       })
     }
     setResultsMap(map)
-    // Compute stats from already-loaded data — zero extra Supabase calls
-    const caseRowsLoaded = rws.filter(r => r.type === 'case')
-    // If the previously-active run was deleted by another user, clear it
-    const runStillExists = currentActiveRunId ? rns.some(r => r.id === currentActiveRunId) : false
-    if (currentActiveRunId && !runStillExists) {
-      setActiveRunId(null)
-      setActiveRowId(null)
-    }
-    const aRunId = (currentActiveRunId && runStillExists) ? currentActiveRunId : null
     if (aRunId && map[aRunId] !== undefined) {
       setTopStats(computeStats(caseRowsLoaded, Object.values(map[aRunId])))
     } else if (aRunId) {
@@ -432,18 +460,66 @@ export default function ScriptPage() {
     return () => window.removeEventListener('qaflow:change', handler)
   }, [reload, activeRunId])
 
-  // Supabase Realtime — sync test results and rows from other team members
+  // Supabase Realtime — sync changes from other team members
   useEffect(() => {
     const channel = supabase
       .channel(`script-${scriptId}`)
-      // Row / result changes — reload with current run
+      // Rows added/deleted by another user — reload structure only, never touch resultsMap
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rows',
-        filter: `script_id=eq.${scriptId}` }, () => reload(activeRunId))
+        filter: `script_id=eq.${scriptId}` }, () => reload(activeRunIdRef.current, true))
+      // Results — SURGICAL update: patch exactly the one cell that changed, zero reload, zero flash
       .on('postgres_changes', { event: '*', schema: 'public', table: 'results' },
-        () => reload(activeRunId))
-      // Run deleted — reload clears activeRunId if it was the deleted one
+        ({ eventType, new: newRow, old: oldRow }: { eventType: string; new: Record<string,unknown>; old: Record<string,unknown> }) => {
+          if (eventType === 'DELETE') {
+            const r = oldRow as { run_id: string; row_id: string }
+            if (!r.run_id || !r.row_id) return
+            setResultsMap(prev => {
+              const runMap = { ...(prev[r.run_id] ?? {}) }
+              delete runMap[r.row_id]
+              return { ...prev, [r.run_id]: runMap }
+            })
+            return
+          }
+          const r = newRow as { id: string; run_id: string; row_id: string; status: TestStatus; comment: string; bug_id: string }
+          if (!r.run_id || !r.row_id) return
+          // Get old status before patching (for stats delta)
+          const prevStatus = resultsMapRef.current[r.run_id]?.[r.row_id]?.status
+          const newStatus = r.status
+          // Patch exactly one cell in resultsMap
+          setResultsMap(prev => {
+            const runMap = { ...(prev[r.run_id] ?? {}) }
+            runMap[r.row_id] = { id: r.id, runId: r.run_id, rowId: r.row_id, status: newStatus, comment: r.comment ?? '', bugId: r.bug_id ?? '' }
+            return { ...prev, [r.run_id]: runMap }
+          })
+          // Update stats surgically — only if this is a case row and status actually changed
+          const isCaseRow = rowsRef.current.find(row => row.id === r.row_id)?.type === 'case'
+          if (!isCaseRow || prevStatus === newStatus) return
+          if (r.run_id === activeRunIdRef.current && topStatsRef.current) {
+            setTopStats(applyStatusChange(topStatsRef.current, prevStatus, newStatus))
+          }
+          const oldRunSt = perRunStatsRef.current[r.run_id]
+          if (oldRunSt && allRunsStatsRef.current) {
+            const newRunSt = applyStatusChange(oldRunSt, prevStatus, newStatus)
+            setPerRunStats(prev => ({ ...prev, [r.run_id]: newRunSt }))
+            setAllRunsStats(prev => {
+              if (!prev) return prev
+              const u = { ...prev,
+                pass: prev.pass - oldRunSt.pass + newRunSt.pass,
+                fail: prev.fail - oldRunSt.fail + newRunSt.fail,
+                blocked: prev.blocked - oldRunSt.blocked + newRunSt.blocked,
+                query: prev.query - oldRunSt.query + newRunSt.query,
+                exclude: prev.exclude - oldRunSt.exclude + newRunSt.exclude,
+                done: prev.done - oldRunSt.done + newRunSt.done,
+                total: prev.total - oldRunSt.total + newRunSt.total,
+              }
+              u.pct = u.total > 0 ? Math.round((u.pass / u.total) * 100) : 0
+              return u
+            })
+          }
+        })
+      // Run deleted — full reload needed to clear activeRunId if it was deleted
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'runs',
-        filter: `plan_id=eq.${planId}` }, () => reload(activeRunId))
+        filter: `plan_id=eq.${planId}` }, () => reload(activeRunIdRef.current))
       // THIS script deleted by another user → show notice + redirect to plan page
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'scripts',
         filter: `id=eq.${scriptId}` }, () => {
@@ -460,15 +536,19 @@ export default function ScriptPage() {
     return () => { supabase.removeChannel(channel) }
   }, [scriptId, planId, activeRunId, reload, id, router])
 
-  // Polling + visibility-based refresh — guarantees changes from other team members
-  // appear within a few seconds, even if Supabase Realtime is misconfigured
+  // Polling + visibility-based refresh — guarantees structural changes (new rows,
+  // new runs) from other team members appear within a few seconds.
+  // Results are intentionally excluded — Realtime handles them surgically so
+  // polling never wipes or replaces resultsMap.
   const runsRefForPoll = useRef<TestRun[]>([])
   useEffect(() => { runsRefForPoll.current = runs }, [runs])
 
   const forceReload = useCallback(async () => {
+    // Only invalidate rows/runs cache — never invalidate results cache.
+    // resultsMap is kept alive in memory and updated surgically via Realtime.
     invalidateCache(`rows:${scriptId}`, `runs:${planId}`, `scripts:${planId}`)
-    runsRefForPoll.current.forEach(r => invalidateCache(`results:${r.id}`))
-    await reload(activeRunIdRef.current)
+    // skipResults=true: reload rows+runs structure but never touch resultsMap
+    await reload(activeRunIdRef.current, true)
   }, [scriptId, planId, reload])
 
   useEffect(() => {
