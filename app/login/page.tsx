@@ -6,7 +6,7 @@ type Mode = 'magic' | 'password'
 type Step = 'form' | 'sent'
 
 export default function LoginPage() {
-  const [mode, setMode]       = useState<Mode>('magic')
+  const [mode, setMode]       = useState<Mode>('password')
   const [step, setStep]       = useState<Step>('form')
   const [email, setEmail]     = useState('')
   const [password, setPassword] = useState('')
@@ -112,8 +112,8 @@ export default function LoginPage() {
           background: 'var(--bg-base)', borderRadius: 10,
           border: '1px solid var(--border)', marginBottom: 24,
         }}>
-          <button style={tabStyle(mode === 'magic')} onClick={() => switchMode('magic')}>Magic link</button>
           <button style={tabStyle(mode === 'password')} onClick={() => switchMode('password')}>Password</button>
+          <button style={tabStyle(mode === 'magic')} onClick={() => switchMode('magic')}>Magic link</button>
         </div>
 
         {/* ── Magic link form ── */}
