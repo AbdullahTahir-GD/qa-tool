@@ -165,7 +165,7 @@ type RowItemProps = {
   onOpenDetail: (rowId: string) => void
   onStartEditing: (rowId: string, title: string) => void
   onEditTitleChange: (v: string) => void
-  onEditSave: (rowId: string, title: string) => void
+  onEditSave: (rowId: string, title: string, advance?: boolean) => void
   onEditInsertAbove: (rowId: string, title: string) => void
   onEditCancel: () => void
   onMenuIcon: (e: React.MouseEvent, rowId: string) => void
@@ -180,6 +180,7 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
 
   return (
     <div
+      data-row-id={row.id}
       onContextMenu={e => onContextMenu(e, row.id)}
       onClick={e => { e.stopPropagation(); if (!isHeading) { if (activeRunId) onCellClick(activeRunId, row.id); else onRowSelectOnly(row.id) } }}
       style={{
@@ -223,10 +224,10 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
         {isEditing ? (
           <input autoFocus value={editTitle}
             onChange={e => onEditTitleChange(e.target.value)}
-            onBlur={() => { onEditSave(row.id, editTitle.trim()) }}
+            onBlur={() => { onEditSave(row.id, editTitle.trim(), false) }}
             onKeyDown={e => {
               if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); onEditInsertAbove(row.id, editTitle.trim()); return }
-              if (e.key === 'Enter') { onEditSave(row.id, editTitle.trim()) }
+              if (e.key === 'Enter') { e.preventDefault(); onEditSave(row.id, editTitle.trim(), true) }
               if (e.key === 'Escape') { onEditCancel() }
             }}
             style={{ flex: 1, background: 'transparent', border: 'none', borderBottom: '2px solid var(--accent)', outline: 'none', fontSize: 14, color: 'var(--text-primary)', padding: '2px 0' }} />
@@ -397,8 +398,32 @@ export default function ScriptPage() {
   const reload = useCallback(async (currentActiveRunId?: string | null, skipResults = false) => {
     const [allScripts, rws, rns] = await Promise.all([getScripts(planId), getRows(scriptId), getTestRuns(planId)])
     setScript(allScripts.find(s => s.id === scriptId) || null)
-    setRows(rws)
-    setRuns(rns)
+    // Only replace rows array if it ACTUALLY differs — prevents flash when the
+    // 5-second poll fires and nothing has changed.
+    setRows(prev => {
+      if (prev.length === rws.length) {
+        let identical = true
+        for (let i = 0; i < prev.length; i++) {
+          const a = prev[i], b = rws[i]
+          if (a.id !== b.id || a.title !== b.title || a.number !== b.number
+              || a.type !== b.type || a.order !== b.order) { identical = false; break }
+        }
+        if (identical) return prev
+      }
+      return rws
+    })
+    setRuns(prev => {
+      if (prev.length === rns.length) {
+        let identical = true
+        for (let i = 0; i < prev.length; i++) {
+          const a = prev[i], b = rns[i]
+          if (a.id !== b.id || a.tester !== b.tester || a.build !== b.build
+              || a.status !== b.status || a.number !== b.number) { identical = false; break }
+        }
+        if (identical) return prev
+      }
+      return rns
+    })
 
     const runStillExists = currentActiveRunId ? rns.some(r => r.id === currentActiveRunId) : false
     if (currentActiveRunId && !runStillExists) {
@@ -464,9 +489,43 @@ export default function ScriptPage() {
   useEffect(() => {
     const channel = supabase
       .channel(`script-${scriptId}`)
-      // Rows added/deleted by another user — reload structure only, never touch resultsMap
+      // Rows — SURGICAL: patch one row at a time, never a full reload. This is
+      // critical because a) every saveRow we issue locally echoes back as a
+      // realtime event, and b) a full reload replaces the rows array, which
+      // would flash all just-spawned blanks out then back in. Optimistic state
+      // is already correct; we only merge the DB version when it differs.
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rows',
-        filter: `script_id=eq.${scriptId}` }, () => reload(activeRunIdRef.current, true))
+        filter: `script_id=eq.${scriptId}` },
+        ({ eventType, new: newRow, old: oldRow }: { eventType: string; new: Record<string,unknown>; old: Record<string,unknown> }) => {
+          if (eventType === 'DELETE') {
+            const r = oldRow as { id: string }
+            if (!r.id) return
+            setRows(prev => prev.filter(x => x.id !== r.id))
+            return
+          }
+          const r = newRow as { id: string; script_id: string; type: 'case'|'heading'; number: string; title: string; order: number }
+          if (!r.id) return
+          const incoming: TestRow = {
+            id: r.id, scriptId: r.script_id, type: r.type,
+            number: r.number ?? '', title: r.title ?? '', order: r.order ?? 0,
+          }
+          setRows(prev => {
+            const idx = prev.findIndex(x => x.id === incoming.id)
+            if (idx >= 0) {
+              // Existing row — patch in place only if something actually changed
+              const cur = prev[idx]
+              if (cur.title === incoming.title && cur.number === incoming.number
+                  && cur.type === incoming.type && cur.order === incoming.order) return prev
+              const next = prev.slice()
+              next[idx] = { ...cur, ...incoming }
+              return next
+            }
+            // New row from another user — append; resort by order to keep layout right
+            const next = [...prev, incoming]
+            next.sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+            return next
+          })
+        })
       // Results — SURGICAL update: patch exactly the one cell that changed, zero reload, zero flash
       .on('postgres_changes', { event: '*', schema: 'public', table: 'results' },
         ({ eventType, new: newRow, old: oldRow }: { eventType: string; new: Record<string,unknown>; old: Record<string,unknown> }) => {
@@ -551,12 +610,18 @@ export default function ScriptPage() {
     await reload(activeRunIdRef.current, true)
   }, [scriptId, planId, reload])
 
+  // Track editing state in a ref so the polling loop can skip refresh while
+  // the user is mid-edit (otherwise the polling reload replaces the rows array
+  // and visually flashes the just-spawned blanks).
+  const editingRowIdRef = useRef<string | null>(null)
+  useEffect(() => { editingRowIdRef.current = editingRowId }, [editingRowId])
+
   useEffect(() => {
     const interval = setInterval(() => {
-      if (document.visibilityState === 'visible') forceReload()
+      if (document.visibilityState === 'visible' && !editingRowIdRef.current) forceReload()
     }, 5000)
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') forceReload()
+      if (document.visibilityState === 'visible' && !editingRowIdRef.current) forceReload()
     }
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('focus', onVisibility)
@@ -575,6 +640,19 @@ export default function ScriptPage() {
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [])
+
+  // Auto-scroll the editing row into view whenever it changes — covers
+  // Shift+Enter spawning a blank past the bottom of the viewport, and the
+  // chained Enter advancing through pre-spawned blanks.
+  useEffect(() => {
+    if (!editingRowId) return
+    // RAF so the DOM has the new row painted before we measure.
+    const id = requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-row-id="${editingRowId}"]`) as HTMLElement | null
+      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [editingRowId])
 
   // Global Shift+Enter: insert blank row above selected row (when not already editing)
   useEffect(() => {
@@ -596,6 +674,7 @@ export default function ScriptPage() {
   const startEditingRow = (rowId: string, title: string) => {
     setEditingRowId(rowId)
     setEditTitle(title)
+    setActiveRowId(rowId)
   }
 
   const insertBlankRowAbove = (rowId: string) => {
@@ -611,7 +690,41 @@ export default function ScriptPage() {
   const handleAddRow = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return
     e.preventDefault()
-    if (!newTitle.trim()) return
+
+    // ── Shift+Enter: save current text (if any), spawn ONE blank at the bottom,
+    // and immediately enter edit mode on it. The cursor lands directly in the
+    // new blank so the user can keep typing without ever losing focus. To
+    // create another blank below, they press Enter (with text) which saves +
+    // spawns the next blank automatically (see handleEditSaveCb).
+    if (e.shiftKey) {
+      const currentRows = rowsRef.current
+      let baseLen = currentRows.length
+      const title = newTitle.trim()
+      if (title) {
+        const savedId = generateId()
+        const order = baseLen
+        setRows(prev => [...prev, { id: savedId, scriptId, order, type: 'case', number: '', title }])
+        saveRow(scriptId, title, '', 'case', { id: savedId, order }).catch(console.error)
+        baseLen += 1
+        setNewTitle('')
+      }
+      const blankId = generateId()
+      const blankOrder = baseLen
+      setRows(prev => [...prev, { id: blankId, scriptId, order: blankOrder, type: 'case', number: '', title: '' }])
+      saveRow(scriptId, '', '', 'case', { id: blankId, order: blankOrder }).catch(console.error)
+      // Drop the cursor directly into the new blank (also moves the highlight).
+      startEditingRow(blankId, '')
+      return
+    }
+
+    // ── Enter on empty input: jump into the first blank row in edit mode ──
+    if (!newTitle.trim()) {
+      const firstBlank = rowsRef.current.find(r => r.type === 'case' && !r.title.trim())
+      if (firstBlank) startEditingRow(firstBlank.id, '')
+      return
+    }
+
+    // ── Enter with text: save normally (existing behavior) ──
     const title = newTitle.trim()
     const newId = generateId()
     const order = rows.length
@@ -832,10 +945,36 @@ export default function ScriptPage() {
     setEditingRowId(rowId); setEditTitle(title)
   }, [])
   const handleEditCancelCb = useCallback(() => setEditingRowId(null), [])
-  const handleEditSaveCb = useCallback((rowId: string, title: string) => {
+  const handleEditSaveCb = useCallback((rowId: string, title: string, advance: boolean = false) => {
     if (title) {
       setRows(prev => prev.map(r => r.id === rowId ? { ...r, title } : r))
       updateRow(scriptId, rowId, { title }).catch(console.error)
+    }
+    if (advance) {
+      // Find next blank row BELOW the saved one — jump cursor straight into it.
+      // Uses rowsRef so we see the latest list (rows state may not have flushed yet).
+      const list = rowsRef.current
+      const idx = list.findIndex(r => r.id === rowId)
+      const nextBlank = idx >= 0
+        ? list.slice(idx + 1).find(r => r.type === 'case' && !r.title.trim())
+        : undefined
+      if (nextBlank) {
+        // Reflect the just-saved title in the working list so the next iteration
+        // doesn't see this row as blank again.
+        if (title) {
+          for (let i = 0; i < list.length; i++) {
+            if (list[i].id === rowId) { list[i] = { ...list[i], title }; break }
+          }
+        }
+        setEditingRowId(nextBlank.id)
+        setEditTitle('')
+        setActiveRowId(nextBlank.id)
+        return
+      }
+      // No more blanks below → exit edit mode and return focus to the bottom add input.
+      setEditingRowId(null)
+      setTimeout(() => addInputRef.current?.focus(), 30)
+      return
     }
     setEditingRowId(null)
   }, [scriptId])  // eslint-disable-line react-hooks/exhaustive-deps
