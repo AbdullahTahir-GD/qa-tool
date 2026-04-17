@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 
 type Mode = 'magic' | 'password'
@@ -15,6 +15,43 @@ export default function LoginPage() {
   const [error, setError]     = useState('')
 
   function switchMode(m: Mode) { setMode(m); setError(''); setStep('form'); setPassword('') }
+
+  // ── Auto-process auth tokens that landed on /login by mistake ──
+  // (e.g. Supabase Site URL pointed to "/" → root redirected here with the
+  // ?code= or #access_token still in the URL). Exchange the code, then go
+  // straight to /projects. This is purely a safety net — the real flow lands
+  // on /auth/callback.
+  useEffect(() => {
+    async function rescueAuthFromUrl() {
+      if (typeof window === 'undefined') return
+      const url    = new URL(window.location.href)
+      const code   = url.searchParams.get('code')
+      const hash   = window.location.hash || ''
+      const hasHashToken = hash.includes('access_token=') || hash.includes('error=')
+
+      if (!code && !hasHashToken) return
+
+      // Try PKCE code exchange
+      if (code) {
+        const { error: err } = await supabase.auth.exchangeCodeForSession(code)
+        if (!err) { window.location.replace('/projects'); return }
+      }
+
+      // Try hash-based — Supabase auto-detects #access_token
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session) { window.location.replace('/projects'); return }
+
+      // Surface any error in the hash to the user
+      if (hash.includes('error=')) {
+        const params = new URLSearchParams(hash.replace(/^#/, ''))
+        const desc = params.get('error_description') || params.get('error') || ''
+        if (desc) setError(decodeURIComponent(desc.replace(/\+/g, ' ')))
+        // Clean the URL
+        window.history.replaceState({}, '', window.location.pathname)
+      }
+    }
+    rescueAuthFromUrl()
+  }, [])
 
   // ── Magic link ──
   async function handleMagicLink() {
@@ -38,7 +75,13 @@ export default function LoginPage() {
     setLoading(true); setError('')
 
     if (isSignUp) {
-      const { error: err } = await supabase.auth.signUp({ email: e, password })
+      const { error: err } = await supabase.auth.signUp({
+        email: e,
+        password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
+        },
+      })
       setLoading(false)
       if (err) { setError(err.message); return }
       // Supabase may auto-confirm or send confirmation email
