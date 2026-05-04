@@ -6,12 +6,13 @@ import {
   getProjects, getProjectById, getPlans, getFolders, saveFolder, deleteFolder, updateFolder,
   getScripts, saveScript, deleteScript, updateScript, duplicateScript, duplicateFolder,
   getTestRuns, getRows, getResults, computeStats, sumStats, peekCache, invalidateCache,
+  saveRow, generateId,
   type Project, type TestPlan, type Folder, type Script, type TestRun, type TestRow, type TestResult, type Stats
 } from '@/lib/db'
 import { supabase } from '@/lib/supabase'
 
 function zeroStats(): Stats { return { pass:0, fail:0, blocked:0, query:0, exclude:0, done:0, total:0, pct:0 } }
-import { Home, ChevronDown, ChevronRight, Plus, FolderOpen, FileText } from 'lucide-react'
+import { Home, ChevronDown, ChevronRight, Plus, FolderOpen, FileText, Upload } from 'lucide-react'
 
 const C = { pass:'#22c55e', fail:'#ef4444', blocked:'#f59e0b', query:'#38bdf8' }
 
@@ -107,6 +108,14 @@ export default function PlanPage() {
   const [newScriptName, setNewScriptName] = useState('')
   const [addingFolder, setAddingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+
+  // Import modal state
+  const [importOpen, setImportOpen] = useState(false)
+  const [importText, setImportText] = useState('')
+  const [importFolderId, setImportFolderId] = useState('')
+  const [importScriptName, setImportScriptName] = useState('')
+  const [importLoading, setImportLoading] = useState(false)
+  const importFileRef = useRef<HTMLInputElement>(null)
 
   const folderDDRef = useRef<HTMLDivElement>(null)
   const scriptDDRef = useRef<HTMLDivElement>(null)
@@ -390,6 +399,151 @@ export default function PlanPage() {
     setNewFolderName(''); setAddingFolder(false); reload()
   }
 
+  // ── Import: parse Testpad CSV or plain text into test case rows ──
+  // Testpad CSV format:
+  //   Lines 1–N: metadata (version, script info, stats) — skip these
+  //   Header row: "number,indent,text,tags,notes,result,issue,comment"
+  //   Data rows: number, indent (1=heading, 2+=case), text (title), ...
+  //   Multi-line notes are enclosed in quotes and can span many lines
+  const parseImportText = (raw: string): { type: 'case' | 'heading'; title: string }[] => {
+    const fullText = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+
+    // ── Detect Testpad CSV: look for the header row ──
+    // Flexible match: some CSVs have 5 cols (number,indent,text,tags,notes),
+    // others have 8+ (…,result,issue,comment,result,issue,comment)
+    const headerMatch = fullText.match(/^number,indent,text,tags,notes/m)
+    if (headerMatch) {
+      // Everything after the header row is data — skip to the end of the full header line
+      const headerLineStart = fullText.indexOf(headerMatch[0])
+      const headerLineEnd = fullText.indexOf('\n', headerLineStart)
+      const dataText = headerLineEnd === -1 ? '' : fullText.slice(headerLineEnd + 1)
+
+      // Parse CSV rows properly handling quoted multi-line fields
+      const rows: string[][] = []
+      let cur: string[] = []
+      let cell = ''
+      let inQuote = false
+
+      for (let i = 0; i < dataText.length; i++) {
+        const ch = dataText[i]
+        if (inQuote) {
+          if (ch === '"' && dataText[i + 1] === '"') {
+            cell += '"'; i++ // escaped quote
+          } else if (ch === '"') {
+            inQuote = false
+          } else {
+            cell += ch
+          }
+        } else {
+          if (ch === '"') {
+            inQuote = true
+          } else if (ch === ',') {
+            cur.push(cell); cell = ''
+          } else if (ch === '\n') {
+            cur.push(cell); cell = ''
+            rows.push(cur); cur = []
+          } else {
+            cell += ch
+          }
+        }
+      }
+      // Flush last row
+      if (cell || cur.length > 0) { cur.push(cell); rows.push(cur) }
+
+      // Columns: 0=number, 1=indent, 2=text, 3=tags, 4=notes, 5=result, 6=issue, 7=comment
+      return rows
+        .filter(cols => {
+          const num = (cols[0] ?? '').trim()
+          const text = (cols[2] ?? '').trim()
+          return /^\d+$/.test(num) && text.length > 0 // skip metadata/blank rows
+        })
+        .map(cols => {
+          const indent = parseInt(cols[1] ?? '2', 10)
+          let text = (cols[2] ?? '').trim()
+          // Strip Testpad "TC-XX:" / "TC - XX:" / "TC-XXX:" prefixes —
+          // Testra already adds its own row numbering (1:, 2:, 3:…)
+          text = text.replace(/^TC[\s-]*\w+\s*:\s*/i, '').trim()
+          return {
+            type: indent <= 1 ? 'heading' as const : 'case' as const,
+            title: text,
+          }
+        })
+    }
+
+    // ── Fallback: plain text — one test case per line ──
+    return fullText.split('\n')
+      .filter(l => l.trim().length > 0)
+      .map(l => {
+        const trimmed = l.trim()
+        if (trimmed.startsWith('# ')) return { type: 'heading' as const, title: trimmed.slice(2).trim() }
+        if (trimmed === trimmed.toUpperCase() && trimmed.length > 3 && !/^\d/.test(trimmed))
+          return { type: 'heading' as const, title: trimmed }
+        const cleaned = trimmed.replace(/^[-•*]\s*/, '').replace(/^\d+[.)]\s*/, '')
+        return { type: 'case' as const, title: cleaned }
+      })
+  }
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const text = reader.result as string
+      setImportText(text)
+      if (!importScriptName) setImportScriptName(file.name.replace(/\.(csv|txt|tsv)$/i, ''))
+    }
+    reader.readAsText(file)
+    // Reset so the same file can be re-selected
+    e.target.value = ''
+  }
+
+  const handleImport = async () => {
+    if (!importText.trim() || !importFolderId || !importScriptName.trim()) return
+    setImportLoading(true)
+    try {
+      const parsed = parseImportText(importText)
+      if (parsed.length === 0) { showToast('No test cases found in the imported text'); setImportLoading(false); return }
+
+      // Create the script
+      const script = await saveScript(planId, importFolderId, importScriptName.trim(), '', scripts.length)
+
+      // ── Bulk insert — ONE DB call instead of N sequential requests ──
+      const bulkRows = parsed.map((item, i) => ({
+        id: generateId(),
+        script_id: script.id,
+        type: item.type,
+        number: '',
+        title: item.title,
+        sort_order: i,
+      }))
+
+      // Supabase supports bulk insert — split into chunks of 500 to stay under payload limits
+      const CHUNK = 500
+      for (let i = 0; i < bulkRows.length; i += CHUNK) {
+        const chunk = bulkRows.slice(i, i + CHUNK)
+        const { error } = await supabase.from('rows').insert(chunk)
+        if (error) throw error
+      }
+
+      showToast(`Imported ${parsed.length} items into "${importScriptName.trim()}"`)
+      setImportOpen(false)
+      setImportText('')
+      setImportScriptName('')
+      setImportFolderId('')
+      reload()
+    } catch (err) {
+      console.error('Import error:', err)
+      showToast('Import failed — check console for details')
+    }
+    setImportLoading(false)
+  }
+
+  const openImportModal = () => {
+    if (!hasFolders) { showToast('Create a folder first before importing'); return }
+    setImportFolderId(folders[0]?.id ?? '')
+    setImportOpen(true)
+  }
+
   const hasFolders = folders.length > 0
 
   // planStats is now computed in reload() as state
@@ -653,7 +807,9 @@ export default function PlanPage() {
       {/* ── Right-click context menus ── */}
       {folderMenu && createPortal(
         <div ref={folderMenuRef} style={{ position:'fixed', left:folderMenu.x, top:folderMenu.y, background:'var(--bg-surface)', border:'1px solid var(--border-strong)', borderRadius:10, padding:'6px 0', minWidth:200, zIndex:9999, boxShadow:'0 8px 32px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.12)' }}>
-          <CtxItem label="+ new script" onClick={() => { handleAddScript(folderMenu.folderId); setFolderMenu(null) }} />
+          <CtxItem label="+ New script" onClick={() => { handleAddScript(folderMenu.folderId); setFolderMenu(null) }} />
+          <CtxItem label="📥 Import script" onClick={() => { setImportFolderId(folderMenu.folderId); setImportOpen(true); setFolderMenu(null) }} />
+          <div style={{ height:1, background:'var(--border)', margin:'5px 0' }} />
           <CtxItem label="Edit name" onClick={() => { setEditingFolderId(folderMenu.folderId); setEditFolderName(folders.find(f=>f.id===folderMenu.folderId)?.name||''); setFolderMenu(null) }} />
           <CtxItem label="Duplicate folder" onClick={async () => {
             const srcFolder = folders.find(f => f.id === folderMenu.folderId)
@@ -716,6 +872,170 @@ export default function PlanPage() {
           }} />
           <div style={{ height:1, background:'var(--border)', margin:'5px 0' }} />
           <CtxItem label="Delete script" danger onClick={async () => { if (confirm('Delete this script?')) { await deleteScript(planId, scriptMenu.scriptId); reload() } setScriptMenu(null) }} />
+        </div>,
+        document.body
+      )}
+
+      {/* ── Import Modal ── */}
+      {importOpen && createPortal(
+        <div
+          onClick={() => { if (!importLoading) setImportOpen(false) }}
+          style={{
+            position:'fixed', inset:0, zIndex:99999,
+            background:'rgba(0,0,0,0.55)', backdropFilter:'blur(6px)',
+            display:'flex', alignItems:'center', justifyContent:'center',
+            padding:20,
+          }}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width:'100%', maxWidth:560,
+              background:'var(--bg-surface)',
+              border:'1px solid rgba(14,165,233,0.25)',
+              borderTop:'3px solid #0ea5e9',
+              borderRadius:16, padding:'28px 32px',
+              boxShadow:'0 24px 64px rgba(0,0,0,0.5), 0 0 0 1px rgba(14,165,233,0.08)',
+            }}>
+            {/* Header with icon */}
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:6 }}>
+              <div style={{
+                width:36, height:36, borderRadius:10, flexShrink:0,
+                background:'linear-gradient(135deg, rgba(14,165,233,0.15) 0%, rgba(2,132,199,0.08) 100%)',
+                border:'1px solid rgba(14,165,233,0.25)',
+                display:'flex', alignItems:'center', justifyContent:'center',
+              }}>
+                <Upload size={16} color="#0ea5e9" />
+              </div>
+              <div>
+                <h2 style={{ fontSize:17, fontWeight:800, color:'var(--text-primary)', margin:0, letterSpacing:'-0.5px' }}>
+                  Import Test Cases
+                </h2>
+                <p style={{ fontSize:12, color:'var(--text-muted)', margin:0 }}>
+                  Upload a Testpad CSV or paste test cases
+                </p>
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div style={{ height:1, background:'linear-gradient(90deg, rgba(14,165,233,0.20), transparent)', margin:'16px 0' }} />
+
+            {/* File upload */}
+            <input ref={importFileRef} type="file" accept=".csv,.txt,.tsv" onChange={handleFileUpload} style={{ display:'none' }} />
+            <button onClick={() => importFileRef.current?.click()} style={{
+              display:'flex', alignItems:'center', gap:8, padding:'10px 18px', marginBottom:14, width:'100%',
+              background:'rgba(14,165,233,0.04)', border:'1px dashed rgba(14,165,233,0.35)',
+              borderRadius:10, fontSize:13, color:'#0ea5e9', cursor:'pointer', fontWeight:600,
+              transition:'all 0.14s', justifyContent:'center',
+            }}
+              onMouseEnter={e => { e.currentTarget.style.background='rgba(14,165,233,0.10)'; e.currentTarget.style.borderColor='rgba(14,165,233,0.55)' }}
+              onMouseLeave={e => { e.currentTarget.style.background='rgba(14,165,233,0.04)'; e.currentTarget.style.borderColor='rgba(14,165,233,0.35)' }}>
+              <Upload size={15} /> Upload CSV / TXT file
+            </button>
+
+            {/* Textarea */}
+            <textarea
+              value={importText}
+              onChange={e => setImportText(e.target.value)}
+              placeholder={"Paste test cases here...\n\n# Login Tests\nVerify user can login with valid credentials\nVerify error shown with invalid password\n# Registration\nVerify user can create new account"}
+              rows={8}
+              style={{
+                width:'100%', boxSizing:'border-box', padding:'12px 14px', borderRadius:10,
+                fontSize:12.5, fontFamily:'monospace', lineHeight:1.6,
+                background:'var(--bg-base)', border:'1px solid var(--border)',
+                color:'var(--text-primary)', outline:'none', resize:'vertical',
+              }}
+              onFocus={e => (e.target.style.borderColor='#0ea5e9')}
+              onBlur={e => (e.target.style.borderColor='var(--border)')}
+            />
+
+            {/* Preview count */}
+            {importText.trim() && (
+              <div style={{
+                fontSize:12, fontWeight:600, margin:'10px 0 0',
+                color:'#0ea5e9',
+                display:'flex', alignItems:'center', gap:6,
+              }}>
+                <div style={{ width:6, height:6, borderRadius:3, background:'#0ea5e9' }} />
+                {(() => {
+                  const items = parseImportText(importText)
+                  const cases = items.filter(i => i.type === 'case').length
+                  const headings = items.filter(i => i.type === 'heading').length
+                  return `${cases} test case${cases !== 1 ? 's' : ''}${headings ? ` + ${headings} heading${headings !== 1 ? 's' : ''}` : ''} detected`
+                })()}
+              </div>
+            )}
+
+            {/* Folder + Script name */}
+            <div style={{ display:'flex', gap:10, marginTop:16 }}>
+              <div style={{ flex:1 }}>
+                <label style={{ fontSize:11, fontWeight:700, color:'var(--text-muted)', letterSpacing:'0.08em', display:'block', marginBottom:6, textTransform:'uppercase' }}>Folder</label>
+                <select
+                  value={importFolderId}
+                  onChange={e => setImportFolderId(e.target.value)}
+                  style={{
+                    width:'100%', padding:'9px 12px', borderRadius:8, fontSize:13,
+                    background:'var(--bg-base)', border:'1px solid var(--border)',
+                    color:'var(--text-primary)', outline:'none',
+                  }}>
+                  <option value="">Select folder…</option>
+                  {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                </select>
+              </div>
+              <div style={{ flex:1 }}>
+                <label style={{ fontSize:11, fontWeight:700, color:'var(--text-muted)', letterSpacing:'0.08em', display:'block', marginBottom:6, textTransform:'uppercase' }}>Script Name</label>
+                <input
+                  value={importScriptName}
+                  onChange={e => setImportScriptName(e.target.value)}
+                  placeholder="e.g. Build Deployment Checks"
+                  style={{
+                    width:'100%', padding:'9px 12px', borderRadius:8, fontSize:13,
+                    background:'var(--bg-base)', border:'1px solid var(--border)',
+                    color:'var(--text-primary)', outline:'none', boxSizing:'border-box',
+                  }}
+                  onFocus={e => (e.target.style.borderColor='#0ea5e9')}
+                  onBlur={e => (e.target.style.borderColor='var(--border)')}
+                />
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:22 }}>
+              <button
+                onClick={() => { setImportOpen(false); setImportText(''); setImportScriptName('') }}
+                disabled={importLoading}
+                style={{
+                  padding:'8px 18px', fontSize:13, fontWeight:500,
+                  background:'transparent', border:'1px solid var(--border-strong)',
+                  borderRadius:8, color:'var(--text-secondary)', cursor:'pointer',
+                  opacity: importLoading ? 0.5 : 1,
+                }}>
+                Cancel
+              </button>
+              {(() => {
+                const ready = !!(importText.trim() && importFolderId && importScriptName.trim())
+                const count = ready ? parseImportText(importText).length : 0
+                return (
+                  <button
+                    onClick={handleImport}
+                    disabled={importLoading || !ready}
+                    style={{
+                      display:'inline-flex', alignItems:'center', gap:6,
+                      padding:'8px 22px', fontSize:13, fontWeight:700,
+                      background: ready ? 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)' : 'var(--bg-depth)',
+                      color: ready ? 'white' : 'var(--text-muted)',
+                      border:'none', borderRadius:8, cursor: importLoading ? 'not-allowed' : 'pointer',
+                      boxShadow: ready ? '0 3px 14px rgba(14,165,233,0.40)' : 'none',
+                      transition:'all 0.15s',
+                      opacity: importLoading ? 0.7 : 1,
+                    }}
+                    onMouseEnter={e => { if (ready && !importLoading) e.currentTarget.style.boxShadow='0 4px 20px rgba(14,165,233,0.55)' }}
+                    onMouseLeave={e => { if (ready) e.currentTarget.style.boxShadow='0 3px 14px rgba(14,165,233,0.40)' }}>
+                    {importLoading ? 'Importing…' : `Import ${count || ''} items`}
+                  </button>
+                )
+              })()}
+            </div>
+          </div>
         </div>,
         document.body
       )}
