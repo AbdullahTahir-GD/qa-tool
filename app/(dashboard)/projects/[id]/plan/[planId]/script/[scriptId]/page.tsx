@@ -305,10 +305,10 @@ export default function ScriptPage() {
 
   const [script, setScript] = useState<Script | null>(null)
   const [rows, setRows] = useState<TestRow[]>(() => peekCache<TestRow[]>(`rows:${scriptId}`) ?? [])
-  const [runs, setRuns] = useState<TestRun[]>(() => peekCache<TestRun[]>(`runs:${planId}`) ?? [])
+  const [runs, setRuns] = useState<TestRun[]>(() => peekCache<TestRun[]>(`runs:${scriptId}`) ?? [])
   const [resultsMap, setResultsMap] = useState<Record<string, Record<string, TestResult>>>(() => {
     // Initialize resultsMap from cache — eliminates blank flash on back-navigation
-    const cachedRuns = peekCache<TestRun[]>(`runs:${planId}`) ?? []
+    const cachedRuns = peekCache<TestRun[]>(`runs:${scriptId}`) ?? []
     const map: Record<string, Record<string, TestResult>> = {}
     for (const run of cachedRuns) {
       const cachedResults = peekCache<TestResult[]>(`results:${run.id}`)
@@ -342,14 +342,14 @@ export default function ScriptPage() {
   const [topStats, setTopStats] = useState<Stats | null>(() => {
     const cachedRows = peekCache<TestRow[]>(`rows:${scriptId}`) ?? []
     const caseRowsCached = cachedRows.filter(r => r.type === 'case')
-    const cachedRuns = peekCache<TestRun[]>(`runs:${planId}`) ?? []
+    const cachedRuns = peekCache<TestRun[]>(`runs:${scriptId}`) ?? []
     if (cachedRuns.length === 0 || caseRowsCached.length === 0) return null
     return null // topStats needs activeRunId which isn't known yet
   })
   const [allRunsStats, setAllRunsStats] = useState<Stats | null>(() => {
     const cachedRows = peekCache<TestRow[]>(`rows:${scriptId}`) ?? []
     const caseRowsCached = cachedRows.filter(r => r.type === 'case')
-    const cachedRuns = peekCache<TestRun[]>(`runs:${planId}`) ?? []
+    const cachedRuns = peekCache<TestRun[]>(`runs:${scriptId}`) ?? []
     if (cachedRuns.length === 0 || caseRowsCached.length === 0) return null
     const cachedMap: Record<string, TestResult[]> = {}
     for (const run of cachedRuns) {
@@ -396,7 +396,7 @@ export default function ScriptPage() {
   //   skipResults=true: reload rows/runs only, recompute stats from current resultsMap in memory —
   //     used by polling and Realtime row events so resultsMap is NEVER wiped mid-session
   const reload = useCallback(async (currentActiveRunId?: string | null, skipResults = false) => {
-    const [allScripts, rws, rns] = await Promise.all([getScripts(planId), getRows(scriptId), getTestRuns(planId)])
+    const [allScripts, rws, rns] = await Promise.all([getScripts(planId), getRows(scriptId), getTestRuns(planId, scriptId)])
     setScript(allScripts.find(s => s.id === scriptId) || null)
     // Only replace rows array if it ACTUALLY differs — prevents flash when the
     // 5-second poll fires and nothing has changed.
@@ -577,8 +577,13 @@ export default function ScriptPage() {
           }
         })
       // Run deleted — full reload needed to clear activeRunId if it was deleted
+      // Filter by script_id client-side since Realtime only supports single-column filters
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'runs',
-        filter: `plan_id=eq.${planId}` }, () => reload(activeRunIdRef.current))
+        filter: `plan_id=eq.${planId}` }, ({ old: r }) => {
+        const deletedScriptId = (r as { script_id?: string }).script_id
+        if (deletedScriptId && deletedScriptId !== scriptId) return // ignore runs from other scripts
+        reload(activeRunIdRef.current)
+      })
       // THIS script deleted by another user → show notice + redirect to plan page
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'scripts',
         filter: `id=eq.${scriptId}` }, () => {
@@ -605,7 +610,7 @@ export default function ScriptPage() {
   const forceReload = useCallback(async () => {
     // Only invalidate rows/runs cache — never invalidate results cache.
     // resultsMap is kept alive in memory and updated surgically via Realtime.
-    invalidateCache(`rows:${scriptId}`, `runs:${planId}`, `scripts:${planId}`)
+    invalidateCache(`rows:${scriptId}`, `runs:${scriptId}`, `runs:${planId}`, `scripts:${planId}`)
     // skipResults=true: reload rows+runs structure but never touch resultsMap
     await reload(activeRunIdRef.current, true)
   }, [scriptId, planId, reload])
@@ -744,7 +749,7 @@ export default function ScriptPage() {
     const number = runs.length + 1
     const date = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
     const time = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
-    const newRun: TestRun = { id: newId, planId, number, tester, date, time, build: '', status: 'in_progress' }
+    const newRun: TestRun = { id: newId, planId, scriptId, number, tester, date, time, build: '', status: 'in_progress' }
     const caseCount = rows.filter(r => r.type === 'case').length
     setRuns(prev => [...prev, newRun])
     setResultsMap(prev => ({ ...prev, [newId]: {} }))
@@ -754,7 +759,7 @@ export default function ScriptPage() {
     setAllRunsStats(prev => prev ? { ...prev, total: prev.total + caseCount } : { pass:0, fail:0, blocked:0, query:0, exclude:0, done:0, total:caseCount, pct:0 })
     const first = rows.find(r => r.type === 'case')
     if (first) { setActiveRowId(first.id); setPanelComment(''); setPanelBugId('') }
-    saveTestRun(planId, tester, '', { id: newId, number, date, time }).catch(console.error)
+    saveTestRun(planId, scriptId, tester, '', { id: newId, number, date, time }).catch(console.error)
   }
 
   // ── Click run column header → select it + open panel on first untested case ──
@@ -1560,7 +1565,7 @@ export default function ScriptPage() {
                         {panelVisible ? '× Panel' : '▶ Panel'}
                       </button>
                     )}
-                    <button onClick={e => { e.stopPropagation(); if (confirm('Delete run?')) { setRuns(prev => prev.filter(r => r.id !== run.id)); setResultsMap(prev => { const n = { ...prev }; delete n[run.id]; return n }); if (activeRunId === run.id) { setActiveRunId(null); setActiveRowId(null); setTopStats(null) } deleteTestRun(planId, run.id).catch(console.error) } }}
+                    <button onClick={e => { e.stopPropagation(); if (confirm('Delete run?')) { setRuns(prev => prev.filter(r => r.id !== run.id)); setResultsMap(prev => { const n = { ...prev }; delete n[run.id]; return n }); if (activeRunId === run.id) { setActiveRunId(null); setActiveRowId(null); setTopStats(null) } deleteTestRun(planId, run.id, scriptId).catch(console.error) } }}
                       style={{ flex:1, background:'none', border:'1px solid var(--border)', borderRadius:5, cursor:'pointer', color:'var(--text-muted)', fontSize:10, padding:'3px 4px', textAlign:'center', transition:'all 0.12s' }}
                       onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.1)'; e.currentTarget.style.color='#f87171'; e.currentTarget.style.borderColor='rgba(239,68,68,0.3)' }}
                       onMouseLeave={e => { e.currentTarget.style.background='none'; e.currentTarget.style.color='var(--text-muted)'; e.currentTarget.style.borderColor='var(--border)' }}>

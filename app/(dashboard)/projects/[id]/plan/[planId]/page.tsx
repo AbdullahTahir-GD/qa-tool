@@ -180,26 +180,36 @@ export default function PlanPage() {
     const [f, s, r] = await Promise.all([getFolders(planId), getScripts(planId), getTestRuns(planId)])
     setFolders(f); setScripts(s); setRuns(r)
 
-    if (r.length === 0) {
+    // Fetch per-script runs + rows in parallel
+    const [allRunsList, allRowsList] = await Promise.all([
+      Promise.all(s.map(sc => getTestRuns(planId, sc.id))),
+      Promise.all(s.map(sc => getRows(sc.id))),
+    ])
+    const scriptRunsMap: Record<string, typeof r> = {}
+    s.forEach((sc, i) => { scriptRunsMap[sc.id] = allRunsList[i] })
+    const scriptRowsMap: Record<string, TestRow[]> = {}
+    s.forEach((sc, i) => { scriptRowsMap[sc.id] = allRowsList[i] })
+
+    // Check if any script has runs
+    const anyRuns = s.some(sc => (scriptRunsMap[sc.id]?.length ?? 0) > 0)
+    if (!anyRuns) {
       setFolderStats({}); setScriptStats({}); setPlanStats(null)
       return
     }
 
-    // Fetch all rows + all results in parallel — two batches instead of N*M sequential queries
-    const [allRowsList, allResultsList] = await Promise.all([
-      Promise.all(s.map(sc => getRows(sc.id))),
-      Promise.all(r.map(run => getResults(run.id))),
-    ])
-    const scriptRowsMap: Record<string, TestRow[]> = {}
-    s.forEach((sc, i) => { scriptRowsMap[sc.id] = allRowsList[i] })
+    // Fetch results for all runs across all scripts
+    const allRuns = s.flatMap(sc => scriptRunsMap[sc.id] ?? [])
+    const allResultsList = await Promise.all(allRuns.map(run => getResults(run.id)))
     const runResultsMap: Record<string, TestResult[]> = {}
-    r.forEach((run, i) => { runResultsMap[run.id] = allResultsList[i] })
+    allRuns.forEach((run, i) => { runResultsMap[run.id] = allResultsList[i] })
 
-    // Compute all script stats locally — zero extra queries
+    // Compute per-script stats using only that script's own runs
     const sStats: Record<string, Stats> = {}
     for (const sc of s) {
       const caseRowsSc = scriptRowsMap[sc.id].filter(rw => rw.type === 'case')
-      sStats[sc.id] = sumStats(r.map(run => computeStats(caseRowsSc, runResultsMap[run.id])))
+      const scriptRuns = scriptRunsMap[sc.id] ?? []
+      if (scriptRuns.length === 0) { sStats[sc.id] = zeroStats(); continue }
+      sStats[sc.id] = sumStats(scriptRuns.map(run => computeStats(caseRowsSc, runResultsMap[run.id])))
     }
 
     // Compute folder stats by summing their scripts — zero extra queries

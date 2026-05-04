@@ -115,7 +115,7 @@ export interface TestRow {
   title: string
 }
 export interface TestRun {
-  id: string; planId: string; number: number
+  id: string; planId: string; scriptId: string; number: number
   tester: string; date: string; time: string; build: string
   status: 'in_progress' | 'completed'
 }
@@ -516,36 +516,36 @@ export async function reorderRows(scriptId: string, rows: TestRow[]): Promise<vo
 // ─────────────────────────────────────────────────────
 // TEST RUNS
 // ─────────────────────────────────────────────────────
-export async function getTestRuns(planId: string): Promise<TestRun[]> {
-  const key = `runs:${planId}`
+export async function getTestRuns(planId: string, scriptId?: string): Promise<TestRun[]> {
+  const key = scriptId ? `runs:${scriptId}` : `runs:${planId}`
   const cached = _get<TestRun[]>(key)
   if (cached) return cached
-  const { data, error } = await supabase
-    .from('runs')
-    .select('*')
-    .eq('plan_id', planId)
-    .order('created_at', { ascending: true })
+  let q = supabase.from('runs').select('*').eq('plan_id', planId).order('created_at', { ascending: true })
+  if (scriptId) q = q.eq('script_id', scriptId)
+  const { data, error } = await q
   if (error) { console.error('getTestRuns:', error); return [] }
-  const result = data.map(r => ({ id: r.id, planId: r.plan_id, number: r.number, tester: r.tester, date: r.run_date, time: r.run_time, build: r.build, status: r.status }))
+  const result = data.map(r => ({ id: r.id, planId: r.plan_id, scriptId: r.script_id ?? '', number: r.number, tester: r.tester, date: r.run_date, time: r.run_time, build: r.build, status: r.status }))
   _set(key, result)
   return result
 }
 
-export async function saveTestRun(planId: string, tester: string, build: string, pre?: { id: string; number: number; date: string; time: string }): Promise<TestRun> {
+export async function saveTestRun(planId: string, scriptId: string, tester: string, build: string, pre?: { id: string; number: number; date: string; time: string }): Promise<TestRun> {
   const now = new Date()
   const id = pre?.id ?? uid()
-  const number = pre?.number ?? ((await getTestRuns(planId)).length + 1)
+  const number = pre?.number ?? ((await getTestRuns(planId, scriptId)).length + 1)
   const date = pre?.date ?? now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
   const time = pre?.time ?? now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+  _del(`runs:${scriptId}`)
   _del(`runs:${planId}`)
-  const { error } = await supabase.from('runs').insert({ id, plan_id: planId, number, tester, build, status: 'in_progress', run_date: date, run_time: time })
+  const { error } = await supabase.from('runs').insert({ id, plan_id: planId, script_id: scriptId, number, tester, build, status: 'in_progress', run_date: date, run_time: time })
   if (error) throw error
-  return { id, planId, number, tester, date, time, build, status: 'in_progress' }
+  return { id, planId, scriptId, number, tester, date, time, build, status: 'in_progress' }
 }
 
-export async function deleteTestRun(planId: string, id: string): Promise<void> {
+export async function deleteTestRun(planId: string, id: string, scriptId?: string): Promise<void> {
   const { error } = await supabase.from('runs').delete().eq('id', id)
   if (error) throw error
+  if (scriptId) _del(`runs:${scriptId}`)
   _del(`runs:${planId}`)
 }
 
@@ -556,6 +556,7 @@ export async function updateTestRun(planId: string, id: string, upd: Partial<Tes
   if (upd.build !== undefined) dbUpd.build = upd.build
   const { error } = await supabase.from('runs').update(dbUpd).eq('id', id)
   if (error) throw error
+  if (upd.scriptId) _del(`runs:${upd.scriptId}`)
   _del(`runs:${planId}`)
 }
 
