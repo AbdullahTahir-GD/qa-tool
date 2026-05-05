@@ -1783,19 +1783,21 @@ export default function ScriptPage() {
               /* ── IN PROGRESS view ── */
               <>
                 {activeRow && activeRow.type === 'case' && (
-                  <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0, height:90, overflow:'hidden', boxSizing:'border-box' }}>
-                    <div style={{ fontSize:10, color:'var(--text-muted)', marginBottom:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em' }}>Testing:</div>
-                    <p style={{ fontSize:12.5, color:'var(--text-body)', margin:0, lineHeight:1.5, overflow:'hidden', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' }}>
-                      {activeRow.number ? `${activeRow.number}: ` : ''}{activeRow.title}
-                    </p>
-                    {activeResult && activeResult.status !== 'not_run' && (
-                      <div style={{ marginTop:4, fontSize:10, padding:'2px 7px', borderRadius:5, display:'inline-block', fontWeight:700, textTransform:'uppercase',
-                        background: activeResult.status==='pass' ? 'rgba(34,197,94,0.15)' : activeResult.status==='fail' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
-                        color: activeResult.status==='pass' ? '#22c55e' : activeResult.status==='fail' ? '#ef4444' : '#f59e0b',
-                      }}>
-                        Current: {activeResult.status}
-                      </div>
-                    )}
+                  <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0, height:90, boxSizing:'border-box', display:'flex', flexDirection:'column' }}>
+                    <div style={{ fontSize:10, color:'var(--text-muted)', marginBottom:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', flexShrink:0 }}>Testing:</div>
+                    <div style={{ flex:1, overflowY:'auto', minHeight:0 }}>
+                      <p style={{ fontSize:12.5, color:'var(--text-body)', margin:0, lineHeight:1.5 }}>
+                        {activeRow.number ? `${activeRow.number}: ` : ''}{activeRow.title}
+                      </p>
+                      {activeResult && activeResult.status !== 'not_run' && (
+                        <div style={{ marginTop:4, fontSize:10, padding:'2px 7px', borderRadius:5, display:'inline-block', fontWeight:700, textTransform:'uppercase',
+                          background: activeResult.status==='pass' ? 'rgba(34,197,94,0.15)' : activeResult.status==='fail' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
+                          color: activeResult.status==='pass' ? '#22c55e' : activeResult.status==='fail' ? '#ef4444' : '#f59e0b',
+                        }}>
+                          Current: {activeResult.status}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
                 {!activeRow && (
