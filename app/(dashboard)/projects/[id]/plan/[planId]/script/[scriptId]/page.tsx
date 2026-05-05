@@ -187,7 +187,7 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
         display: 'flex', alignItems: 'center',
         borderBottom: '1px solid var(--border)',
         minHeight: isHeading ? 44 : 40,
-        minWidth: 'max-content',
+        width: '100%',
         cursor: isHeading ? 'default' : 'pointer',
         background: isHeading
           ? 'linear-gradient(90deg, rgba(14,165,233,0.13) 0%, rgba(14,165,233,0.04) 100%)'
@@ -235,23 +235,22 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
           <>
             <span
               onDoubleClick={() => onStartEditing(row.id, row.title)}
-              style={{
+              style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+              <span style={{
                 fontSize: isHeading ? 15 : 14,
                 fontWeight: isHeading ? 700 : 400,
                 color: isHeading ? 'var(--accent-hover)' : 'var(--text-body)',
-                flex: 1, lineHeight: 1.55,
+                lineHeight: 1.55,
                 letterSpacing: isHeading ? '0.04em' : 'normal',
                 textTransform: isHeading ? 'uppercase' : 'none',
                 wordBreak: 'break-word',
                 overflowWrap: 'anywhere',
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
+                whiteSpace: 'normal',
               }}>
-              {row.title
-                ? (isHeading ? row.title : (row.number ? `${row.number}: ${row.title}` : row.title))
-                : <span style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>Double-click to edit</span>}
+                {row.title
+                  ? (isHeading ? row.title : (row.number ? `${row.number}: ${row.title}` : row.title))
+                  : <span style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>Double-click to edit</span>}
+              </span>
             </span>
             {!isHeading && (
               <button
