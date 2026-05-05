@@ -146,7 +146,7 @@ export default function LoginPage() {
 
         {/* Title */}
         <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', margin: '0 0 20px', letterSpacing: '-0.5px' }}>
-          Sign in
+          {isSignUp ? 'Create account' : 'Sign in'}
         </h1>
 
         {/* Tabs */}
