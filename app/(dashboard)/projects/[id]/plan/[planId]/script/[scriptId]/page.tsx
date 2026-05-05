@@ -1029,16 +1029,29 @@ export default function ScriptPage() {
     updateTestRun(planId, activeRunId, { status: 'in_progress' }).catch(console.error)
   }
 
-  // jsPDF only supports Latin-1 (ISO 8859-1). Unicode chars like smart quotes,
-  // curly apostrophes, em-dashes etc. render as "&" in the PDF — sanitize first.
-  const sanitizeForPDF = (text: string): string =>
-    text
-      .replace(/[‘’ʼ]/g, "'")   // smart single quotes / apostrophes → '
-      .replace(/[“”«»]/g, '"') // smart double quotes → "
-      .replace(/[–—]/g, '-')          // en-dash / em-dash → -
-      .replace(/…/g, '...')                // ellipsis → ...
-      .replace(/ /g, ' ')                  // non-breaking space → space
-      .replace(/[^\x00-\xFF]/g, '')             // drop anything else outside Latin-1
+  // jsPDF only supports Latin-1. Map common Unicode symbols to ASCII equivalents.
+  const sanitizeForPDF = (text: string): string => {
+    let s = text
+    s = s.replace(/[\u2018\u2019\u02bc]/g, "'")           // smart single quotes
+    s = s.replace(/[\u201c\u201d\u00ab\u00bb\u201e]/g, '"') // smart double quotes
+    s = s.replace(/[\u2013\u2014\u2015]/g, '-')           // en/em dash
+    s = s.replace(/[\u2212\ufe63\uff0d]/g, '-')           // minus sign variants
+    s = s.replace(/[\u00a0\u202f\u2009\u2003]/g, ' ')   // special spaces
+    s = s.replace(/\u2026/g, '...')                         // ellipsis
+    s = s.replace(/[\u2022\u00b7\u25cf\u25e6\u25aa\u25b8\u25ba]/g, '-') // bullets
+    s = s.replace(/[\u2192\u21d2\u27a4\u279c\u27a1]/g, '->')  // right arrows
+    s = s.replace(/[\u2190\u21d0]/g, '<-')                // left arrows
+    s = s.replace(/[\u00d7\u2715\u2717]/g, 'x')          // cross/multiply
+    s = s.replace(/\u00f7/g, '/')                          // division
+    s = s.replace(/[\u2265\u2a7e]/g, '>=')               // >=
+    s = s.replace(/[\u2264\u2a7d]/g, '<=')               // <=
+    s = s.replace(/\u2260/g, '!=')                        // !=
+    s = s.replace(/[\u2713\u2714\u2611]/g, 'OK')        // checkmarks
+    s = s.replace(/[\u2717\u2718\u2612]/g, 'FAIL')      // x-marks
+    s = s.replace(/[\u2122\u00ae\u00a9]/g, '')          // TM/R/C symbols
+    s = s.replace(/[^\x00-\xFF]/g, '?')                  // anything else outside Latin-1
+    return s
+  }
 
   const generatePDF = async () => {
     if (runs.length === 0) return
