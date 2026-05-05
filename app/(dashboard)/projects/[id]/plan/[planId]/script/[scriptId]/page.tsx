@@ -1783,13 +1783,13 @@ export default function ScriptPage() {
               /* ── IN PROGRESS view ── */
               <>
                 {activeRow && activeRow.type === 'case' && (
-                  <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
+                  <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0, height:90, overflow:'hidden', boxSizing:'border-box' }}>
                     <div style={{ fontSize:10, color:'var(--text-muted)', marginBottom:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em' }}>Testing:</div>
-                    <p style={{ fontSize:12.5, color:'var(--text-body)', margin:0, lineHeight:1.5 }}>
+                    <p style={{ fontSize:12.5, color:'var(--text-body)', margin:0, lineHeight:1.5, overflow:'hidden', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' }}>
                       {activeRow.number ? `${activeRow.number}: ` : ''}{activeRow.title}
                     </p>
                     {activeResult && activeResult.status !== 'not_run' && (
-                      <div style={{ marginTop:6, fontSize:10, padding:'3px 8px', borderRadius:5, display:'inline-block', fontWeight:700, textTransform:'uppercase',
+                      <div style={{ marginTop:4, fontSize:10, padding:'2px 7px', borderRadius:5, display:'inline-block', fontWeight:700, textTransform:'uppercase',
                         background: activeResult.status==='pass' ? 'rgba(34,197,94,0.15)' : activeResult.status==='fail' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
                         color: activeResult.status==='pass' ? '#22c55e' : activeResult.status==='fail' ? '#ef4444' : '#f59e0b',
                       }}>
@@ -1799,7 +1799,7 @@ export default function ScriptPage() {
                   </div>
                 )}
                 {!activeRow && (
-                  <div style={{ padding:'16px 14px', fontSize:12, color:'var(--text-muted)', fontStyle:'italic' }}>
+                  <div style={{ padding:'16px 14px', fontSize:12, color:'var(--text-muted)', fontStyle:'italic', height:90, boxSizing:'border-box' }}>
                     Click a test case row to start marking results.
                   </div>
                 )}
