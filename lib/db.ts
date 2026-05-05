@@ -280,8 +280,12 @@ export async function deleteFolder(planId: string, id: string): Promise<void> {
   _del(`folders:${planId}`)
 }
 
-export async function updateFolder(planId: string, id: string, name: string): Promise<void> {
-  const { error } = await supabase.from('folders').update({ name }).eq('id', id)
+export async function updateFolder(planId: string, id: string, nameOrUpd: string | { name?: string; order?: number }): Promise<void> {
+  const upd = typeof nameOrUpd === 'string' ? { name: nameOrUpd } : nameOrUpd
+  const dbUpd: Record<string, unknown> = {}
+  if (upd.name !== undefined) dbUpd.name = upd.name
+  if (upd.order !== undefined) dbUpd.sort_order = upd.order
+  const { error } = await supabase.from('folders').update(dbUpd).eq('id', id)
   if (error) throw error
   _del(`folders:${planId}`)
 }

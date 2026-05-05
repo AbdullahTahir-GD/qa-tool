@@ -643,6 +643,8 @@ export default function ScriptPage() {
     const close = (e: MouseEvent) => {
       const target = e.target as HTMLElement
       if (!target.closest('[data-rowmenu]')) setRowMenu(null)
+      // Deselect active row when clicking outside the script content area
+      if (!target.closest('[data-script-content]')) setActiveRowId(null)
     }
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
@@ -1386,7 +1388,7 @@ export default function ScriptPage() {
   }
 
   return (
-    <div style={{
+    <div data-script-content style={{
       display: 'flex',
       height: 'calc(100vh - var(--topnav-height) - 48px)',
       overflow: 'hidden',
@@ -1401,7 +1403,7 @@ export default function ScriptPage() {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
 
         {/* Top bar */}
-        <div style={{
+        <div onClick={() => setActiveRowId(null)} style={{
           display: 'flex', alignItems: 'center', gap: 8,
           padding: '9px 16px',
           background: 'var(--bg-elevated)',
@@ -1534,7 +1536,7 @@ export default function ScriptPage() {
         </div>
 
         {/* Run column headers — only shown when runs exist */}
-        {runs.length > 0 && <div ref={runHeaderRef} style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)', overflowX: 'hidden' }}>
+        {runs.length > 0 && <div ref={runHeaderRef} onClick={() => setActiveRowId(null)} style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)', overflowX: 'hidden' }}>
           {/* Spacer must match test-case row left section exactly: 28px + 58px (num) + 26px (icon) + flex:1 (title) */}
           <div style={{ width: 28, flexShrink: 0 }} />
           <div style={{ width: 58, flexShrink: 0 }} />
@@ -1954,29 +1956,29 @@ export default function ScriptPage() {
         document.body
       )}
 
-      {/* New Run modal */}
-      {addingRun && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,20,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 400 }}>
+      {/* New Run modal — portalled to body so it escapes the animate-fade-in stacking context and covers the full viewport including topnav */}
+      {addingRun && createPortal(
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,12,20,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
           <div style={{
             background: 'var(--bg-surface)',
-            border: '1px solid var(--border-strong)',
+            border: '1px solid var(--border-accent)',
             borderRadius: 16,
             width: 380,
-            boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
+            boxShadow: '0 24px 64px rgba(0,0,0,0.35)',
             overflow: 'hidden',
           }}>
             {/* Modal header */}
             <div style={{
-              background: 'linear-gradient(135deg, rgba(22,163,74,0.12) 0%, rgba(22,163,74,0.04) 100%)',
-              borderBottom: '1px solid rgba(22,163,74,0.15)',
+              background: 'linear-gradient(135deg, rgba(14,165,233,0.12) 0%, rgba(14,165,233,0.04) 100%)',
+              borderBottom: '1px solid rgba(14,165,233,0.18)',
               padding: '18px 24px',
               display: 'flex', alignItems: 'center', gap: 12,
             }}>
               <div style={{
                 width: 34, height: 34, borderRadius: 9,
-                background: 'linear-gradient(135deg,#16a34a 0%,#15803d 100%)',
+                background: 'var(--grad-accent)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                boxShadow: '0 3px 10px rgba(22,163,74,0.35)',
+                boxShadow: '0 3px 10px rgba(14,165,233,0.35)',
                 fontSize: 15, color: 'white', flexShrink: 0, lineHeight: 1,
               }}>⚡</div>
               <div>
@@ -1999,7 +2001,7 @@ export default function ScriptPage() {
                     color: 'var(--text-primary)', outline: 'none',
                     boxSizing: 'border-box', transition: 'border-color 0.15s',
                   }}
-                  onFocus={e => { e.currentTarget.style.borderColor = 'rgba(22,163,74,0.5)' }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--accent)' }}
                   onBlur={e => { e.currentTarget.style.borderColor = 'var(--border-strong)' }}
                 />
               </div>
@@ -2017,20 +2019,20 @@ export default function ScriptPage() {
                 <button type="submit"
                   style={{
                     flex: 2, padding: '10px',
-                    background: 'linear-gradient(135deg,#16a34a 0%,#15803d 100%)',
+                    background: 'var(--grad-accent)',
                     color: 'white', border: 'none', borderRadius: 9,
                     fontSize: 13, fontWeight: 700, cursor: 'pointer',
-                    boxShadow: '0 4px 14px rgba(22,163,74,0.4)', transition: 'all 0.15s',
+                    boxShadow: '0 4px 14px rgba(14,165,233,0.35)', transition: 'all 0.15s',
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 6px 20px rgba(22,163,74,0.55)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
-                  onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 4px 14px rgba(22,163,74,0.4)'; e.currentTarget.style.transform = 'none' }}>
+                  onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 6px 20px rgba(14,165,233,0.50)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
+                  onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 4px 14px rgba(14,165,233,0.35)'; e.currentTarget.style.transform = 'none' }}>
                   Start Run
                 </button>
               </div>
             </form>
           </div>
         </div>
-      )}
+      , document.body)}
     </div>
   )
 }

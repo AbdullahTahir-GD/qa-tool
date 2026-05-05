@@ -39,23 +39,23 @@ function StatBlock({ pass, fail, blocked, query, done, total, pct }:
     { label:'Query',   value:query,   color:C.query   },
   ]
   return (
-    <div style={{ display:'flex', alignItems:'center', height:'100%', flexShrink:0 }} onClick={e=>e.stopPropagation()}>
+    <div style={{ display:'flex', alignItems:'center', flexShrink:0 }} onClick={e=>e.stopPropagation()}>
       {items.map((s, i) => (
         <div key={s.label} style={{ display:'flex', alignItems:'center', flexShrink:0 }}>
           {i > 0 && (
-            <div style={{ width:1, height:28, background:'var(--border-strong)', margin:'0 12px', flexShrink:0 }} />
+            <div style={{ width:1, height:28, background:'var(--border-strong)', margin:'0 10px', flexShrink:0 }} />
           )}
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', minWidth:42 }}>
-            <span style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:'var(--text-muted)', lineHeight:1, marginBottom:3 }}>{s.label}</span>
+          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', width:54, flexShrink:0 }}>
+            <span style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-muted)', lineHeight:1, marginBottom:3 }}>{s.label}</span>
             <span style={{ fontSize:15, fontWeight:800, color:s.color, lineHeight:1 }}>{s.value}</span>
           </div>
         </div>
       ))}
-      <div style={{ margin:'0 14px 0 14px', flexShrink:0 }}>
+      <div style={{ margin:'0 14px', flexShrink:0 }}>
         <MiniBar pass={pass} fail={fail} blocked={blocked} query={query} total={total} />
       </div>
-      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0, minWidth:52 }}>
-        <span style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', color:'var(--text-muted)', lineHeight:1, marginBottom:3 }}>Done</span>
+      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0, width:72 }}>
+        <span style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text-muted)', lineHeight:1, marginBottom:3 }}>Done</span>
         <span style={{ fontSize:13, fontWeight:700, color:'var(--text-primary)', lineHeight:1 }}>{done}/{total} <span style={{ fontSize:11, fontWeight:500, color:'var(--text-secondary)' }}>{pct}%</span></span>
       </div>
     </div>
@@ -108,6 +108,12 @@ export default function PlanPage() {
   const [newScriptName, setNewScriptName] = useState('')
   const [addingFolder, setAddingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+
+  // Drag-and-drop state
+  const [draggingFolderId, setDraggingFolderId] = useState<string|null>(null)
+  const [dragOverFolderId, setDragOverFolderId] = useState<string|null>(null)
+  const [draggingScriptId, setDraggingScriptId] = useState<string|null>(null)
+  const [dragOverScriptId, setDragOverScriptId] = useState<string|null>(null)
 
   // Import modal state
   const [importOpen, setImportOpen] = useState(false)
@@ -548,6 +554,61 @@ export default function PlanPage() {
     setImportLoading(false)
   }
 
+  // ── Drag-and-drop: folders ──
+  const handleFolderDragStart = (e: React.DragEvent, folderId: string) => {
+    setDraggingFolderId(folderId)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+  const handleFolderDragOver = (e: React.DragEvent, folderId: string) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (folderId !== draggingFolderId) setDragOverFolderId(folderId)
+  }
+  const handleFolderDrop = (e: React.DragEvent, targetFolderId: string) => {
+    e.preventDefault()
+    if (!draggingFolderId || draggingFolderId === targetFolderId) { setDraggingFolderId(null); setDragOverFolderId(null); return }
+    const newFolders = [...folders]
+    const fromIdx = newFolders.findIndex(f => f.id === draggingFolderId)
+    const toIdx   = newFolders.findIndex(f => f.id === targetFolderId)
+    if (fromIdx < 0 || toIdx < 0) return
+    const [moved] = newFolders.splice(fromIdx, 1)
+    newFolders.splice(toIdx, 0, moved)
+    const reordered = newFolders.map((f, i) => ({ ...f, order: i }))
+    setFolders(reordered)
+    setDraggingFolderId(null); setDragOverFolderId(null)
+    reordered.forEach(f => updateFolder(planId, f.id, { order: f.order }).catch(console.error))
+  }
+
+  // ── Drag-and-drop: scripts ──
+  const handleScriptDragStart = (e: React.DragEvent, scriptId: string) => {
+    setDraggingScriptId(scriptId)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+  const handleScriptDragOver = (e: React.DragEvent, scriptId: string) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (scriptId !== draggingScriptId) setDragOverScriptId(scriptId)
+  }
+  const handleScriptDrop = (e: React.DragEvent, targetScriptId: string) => {
+    e.preventDefault()
+    if (!draggingScriptId || draggingScriptId === targetScriptId) { setDraggingScriptId(null); setDragOverScriptId(null); return }
+    const src = scripts.find(s => s.id === draggingScriptId)
+    const tgt = scripts.find(s => s.id === targetScriptId)
+    if (!src || !tgt || src.folderId !== tgt.folderId) return // only reorder within same folder
+    const folderScripts = scripts.filter(s => s.folderId === src.folderId)
+    const fromIdx = folderScripts.findIndex(s => s.id === draggingScriptId)
+    const toIdx   = folderScripts.findIndex(s => s.id === targetScriptId)
+    const [moved] = folderScripts.splice(fromIdx, 1)
+    folderScripts.splice(toIdx, 0, moved)
+    const reordered = folderScripts.map((s, i) => ({ ...s, order: i }))
+    setScripts(prev => {
+      const others = prev.filter(s => s.folderId !== src.folderId)
+      return [...others, ...reordered].sort((a, b) => a.order - b.order)
+    })
+    setDraggingScriptId(null); setDragOverScriptId(null)
+    reordered.forEach(s => updateScript(planId, s.id, { order: s.order }).catch(console.error))
+  }
+
   const openImportModal = () => {
     if (!hasFolders) { showToast('Create a folder first before importing'); return }
     setImportFolderId(folders[0]?.id ?? '')
@@ -705,17 +766,26 @@ export default function PlanPage() {
         const isFolderDuplicating = folder.id.startsWith('dup_f_')
 
         return (
-          <div key={folder.id} style={{ marginBottom:14, opacity: isFolderDuplicating ? 0.6 : 1 }}>
+          <div key={folder.id}
+            style={{ marginBottom:14, opacity: isFolderDuplicating ? 0.6 : draggingFolderId === folder.id ? 0.4 : 1, transition:'opacity 0.15s' }}
+            onDragOver={e => handleFolderDragOver(e, folder.id)}
+            onDrop={e => handleFolderDrop(e, folder.id)}>
             {/* Folder header */}
             <div
+              draggable={!isFolderDuplicating}
+              onDragStart={e => handleFolderDragStart(e, folder.id)}
+              onDragEnd={() => { setDraggingFolderId(null); setDragOverFolderId(null) }}
               onContextMenu={e => { if (!isFolderDuplicating) handleFolderCtx(e, folder.id) }}
               style={{
                 display:'flex', alignItems:'center', gap:10, padding:'12px 18px',
-                background:'linear-gradient(90deg, rgba(14,165,233,0.10) 0%, rgba(14,165,233,0.04) 100%)',
-                border:'1px solid rgba(14,165,233,0.22)',
+                background: dragOverFolderId === folder.id
+                  ? 'linear-gradient(90deg, rgba(14,165,233,0.22) 0%, rgba(14,165,233,0.10) 100%)'
+                  : 'linear-gradient(90deg, rgba(14,165,233,0.10) 0%, rgba(14,165,233,0.04) 100%)',
+                border: dragOverFolderId === folder.id ? '1px solid rgba(14,165,233,0.60)' : '1px solid rgba(14,165,233,0.22)',
                 borderLeft:'3px solid #0ea5e9',
                 borderRadius: isCollapsed ? 11 : '11px 11px 0 0',
-                cursor: isFolderDuplicating ? 'wait' : 'pointer', userSelect:'none',
+                cursor: isFolderDuplicating ? 'wait' : 'grab', userSelect:'none',
+                transition:'background 0.12s, border-color 0.12s',
               }}
               onClick={() => { if (!isFolderDuplicating) setCollapsed(prev => { const n=new Set(prev); n.has(folder.id)?n.delete(folder.id):n.add(folder.id); return n }) }}>
               <span style={{ fontSize:12, color:'var(--text-secondary)', flexShrink:0 }}>{isCollapsed ? '▶' : '▼'}</span>
@@ -744,13 +814,19 @@ export default function PlanPage() {
                   const scriptSt = scriptStats[script.id] ?? { pass:0, fail:0, blocked:0, query:0, done:0, total:0, pct:0 }
                   const isDuplicating = script.id.startsWith('dup_')
                   return (
-                    <div key={script.id}>
+                    <div key={script.id}
+                      draggable={!isDuplicating}
+                      onDragStart={e => handleScriptDragStart(e, script.id)}
+                      onDragOver={e => handleScriptDragOver(e, script.id)}
+                      onDrop={e => handleScriptDrop(e, script.id)}
+                      onDragEnd={() => { setDraggingScriptId(null); setDragOverScriptId(null) }}
+                      style={{ opacity: draggingScriptId === script.id ? 0.4 : 1, transition:'opacity 0.15s' }}>
                       <div
                         onContextMenu={e => { if (!isDuplicating) handleScriptCtx(e, script.id) }}
                         onClick={() => { if (!isDuplicating) router.push(`/projects/${id}/plan/${planId}/script/${script.id}`) }}
-                        style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 16px 11px 46px', background:'var(--bg-surface)', borderBottom: idx < folderScripts.length-1 || addingScriptInFolder===folder.id ? '1px solid var(--border)' : 'none', cursor: isDuplicating ? 'wait' : 'pointer', transition:'background 0.1s', opacity: isDuplicating ? 0.55 : 1 }}
+                        style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 18px 11px 14px', background: dragOverScriptId === script.id ? 'rgba(14,165,233,0.08)' : 'var(--bg-surface)', borderBottom: idx < folderScripts.length-1 || addingScriptInFolder===folder.id ? '1px solid var(--border)' : 'none', borderLeft: dragOverScriptId === script.id ? '3px solid #0ea5e9' : '3px solid transparent', cursor: isDuplicating ? 'wait' : 'pointer', transition:'background 0.1s, border-color 0.1s', opacity: isDuplicating ? 0.55 : 1 }}
                         onMouseEnter={e => { if (!isDuplicating) e.currentTarget.style.background='rgba(14,165,233,0.05)' }}
-                        onMouseLeave={e => (e.currentTarget.style.background='var(--bg-surface)')}
+                        onMouseLeave={e => { e.currentTarget.style.background = dragOverScriptId === script.id ? 'rgba(14,165,233,0.08)' : 'var(--bg-surface)' }}
                       >
                         {isDuplicating
                           ? <span style={{ fontSize:12, animation:'spin 1s linear infinite', display:'inline-block', flexShrink:0 }}>⟳</span>
