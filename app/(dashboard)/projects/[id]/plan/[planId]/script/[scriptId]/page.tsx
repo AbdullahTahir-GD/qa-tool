@@ -1029,6 +1029,17 @@ export default function ScriptPage() {
     updateTestRun(planId, activeRunId, { status: 'in_progress' }).catch(console.error)
   }
 
+  // jsPDF only supports Latin-1 (ISO 8859-1). Unicode chars like smart quotes,
+  // curly apostrophes, em-dashes etc. render as "&" in the PDF — sanitize first.
+  const sanitizeForPDF = (text: string): string =>
+    text
+      .replace(/[‘’ʼ]/g, "'")   // smart single quotes / apostrophes → '
+      .replace(/[“”«»]/g, '"') // smart double quotes → "
+      .replace(/[–—]/g, '-')          // en-dash / em-dash → -
+      .replace(/…/g, '...')                // ellipsis → ...
+      .replace(/ /g, ' ')                  // non-breaking space → space
+      .replace(/[^\x00-\xFF]/g, '')             // drop anything else outside Latin-1
+
   const generatePDF = async () => {
     if (runs.length === 0) return
     const { default: jsPDF } = await import('jspdf')
@@ -1089,7 +1100,7 @@ export default function ScriptPage() {
     // Meta line
     doc.setFontSize(9)
     doc.setTextColor(130, 138, 150)
-    const safeScriptName = (script?.name || '').replace(/[^\x20-\x7E]/g, '')
+    const safeScriptName = sanitizeForPDF(script?.name || '')
     const dateStr = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/[^\x20-\x7E]/g, '')
     const timeStr = new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true }).replace(/[^\x20-\x7E]/g, '')
     const meta = `Script: ${safeScriptName}   -   ${runs.length} Run${runs.length > 1 ? 's' : ''}   -   ${dateStr}  ${timeStr}`
@@ -1282,7 +1293,7 @@ export default function ScriptPage() {
 
     caseRowsOnly.forEach((row, idx) => {
       doc.setFontSize(8.5)
-      const title = row.number ? `${row.number}: ${row.title}` : row.title
+      const title = sanitizeForPDF(row.number ? `${row.number}: ${row.title}` : row.title)
       const titleLines: string[] = doc.splitTextToSize(title, titleColW - 12)
       const lineH = 13
       const rowH = Math.max(20, titleLines.length * lineH + 6)
