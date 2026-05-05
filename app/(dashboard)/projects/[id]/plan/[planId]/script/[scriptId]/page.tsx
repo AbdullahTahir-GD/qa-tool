@@ -184,7 +184,7 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
       onContextMenu={e => onContextMenu(e, row.id)}
       onClick={e => { e.stopPropagation(); if (!isHeading) { if (activeRunId) onCellClick(activeRunId, row.id); else onRowSelectOnly(row.id) } }}
       style={{
-        display: 'flex', alignItems: 'flex-start',
+        display: 'flex', alignItems: 'center',
         borderBottom: '1px solid var(--border)',
         minHeight: isHeading ? 44 : 40,
         minWidth: 'max-content',
@@ -201,12 +201,12 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
       <div style={{ width: 28, flexShrink: 0 }} />
 
       {/* Row number */}
-      <div style={{ width: 58, padding: '10px 10px 10px 4px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
+      <div style={{ width: 58, padding: '0 10px 0 4px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
         {num}
       </div>
 
       {/* Test case icon — left click opens menu */}
-      <div style={{ width: 26, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 11 }}>
+      <div style={{ width: 26, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {!isHeading && (
           <div
             onClick={e => onMenuIcon(e, row.id)}
@@ -220,7 +220,7 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
       </div>
 
       {/* Title + detail trigger */}
-      <div style={{ flex: 1, padding: '10px 14px 10px', minWidth: 0, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+      <div style={{ flex: 1, padding: '8px 14px', minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
         {isEditing ? (
           <input autoFocus value={editTitle}
             onChange={e => onEditTitleChange(e.target.value)}
@@ -244,7 +244,10 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
                 textTransform: isHeading ? 'uppercase' : 'none',
                 wordBreak: 'break-word',
                 overflowWrap: 'anywhere',
-                whiteSpace: 'normal',
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
               }}>
               {row.title
                 ? (isHeading ? row.title : (row.number ? `${row.number}: ${row.title}` : row.title))
