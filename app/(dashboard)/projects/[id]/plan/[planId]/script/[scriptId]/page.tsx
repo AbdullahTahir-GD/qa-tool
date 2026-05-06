@@ -11,6 +11,7 @@ import {
   type Stats, type Script, type TestRow, type TestRun, type TestStatus, type TestResult, type TestCaseDetail
 } from '@/lib/db'
 import { supabase } from '@/lib/supabase'
+import { useSidebar } from '@/components/providers/sidebar-context'
 
 // ── DetailPanel ─────────────────────────────────────────────────────────────
 // Extracted into its own memo'd component so that typing inside it only
@@ -197,11 +198,8 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
       }}
       >
 
-      {/* Left spacer — matches run header */}
-      <div style={{ width: 28, flexShrink: 0 }} />
-
-      {/* Row number */}
-      <div style={{ width: 58, padding: '0 10px 0 4px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
+      {/* Row number — flush left, no spacer */}
+      <div style={{ width: 40, padding: '0 6px 0 8px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
         {num}
       </div>
 
@@ -304,6 +302,16 @@ const RowItem = memo(function RowItem({ row, idx, runs, isActiveRow, activeRunId
 export default function ScriptPage() {
   const { id, planId, scriptId } = useParams<{ id: string; planId: string; scriptId: string }>()
   const router = useRouter()
+
+  // Auto-close sidebar when entering a script (more room for test cases),
+  // and reopen it on leave. User can manually toggle it back open while in the script.
+  const { close: closeSidebar, openSidebar } = useSidebar()
+  const sidebarFnsRef = useRef({ closeSidebar, openSidebar })
+  sidebarFnsRef.current = { closeSidebar, openSidebar }
+  useEffect(() => {
+    sidebarFnsRef.current.closeSidebar()
+    return () => { sidebarFnsRef.current.openSidebar() }
+  }, []) // mount/unmount only — manual toggles inside the script are respected
 
   const [script, setScript] = useState<Script | null>(null)
   const [rows, setRows] = useState<TestRow[]>(() => peekCache<TestRow[]>(`rows:${scriptId}`) ?? [])
@@ -1537,9 +1545,8 @@ export default function ScriptPage() {
 
         {/* Run column headers — only shown when runs exist */}
         {runs.length > 0 && <div ref={runHeaderRef} onClick={() => setActiveRowId(null)} style={{ display: 'flex', flexShrink: 0, borderBottom: '2px solid var(--border-strong)', background: 'var(--bg-base-alt)', overflowX: 'hidden' }}>
-          {/* Spacer must match test-case row left section exactly: 28px + 58px (num) + 26px (icon) + flex:1 (title) */}
-          <div style={{ width: 28, flexShrink: 0 }} />
-          <div style={{ width: 58, flexShrink: 0 }} />
+          {/* Spacer must match test-case row left section exactly: 40px (num) + 26px (icon) + flex:1 (title) */}
+          <div style={{ width: 40, flexShrink: 0 }} />
           <div style={{ width: 26, flexShrink: 0 }} />
           <div style={{ flex: 1, minWidth: 0 }} />
 
@@ -1659,8 +1666,7 @@ export default function ScriptPage() {
 
           {/* Add new row input */}
           <div style={{ display: 'flex', alignItems: 'center', minHeight: 42, borderBottom: '1px solid var(--border-subtle)', minWidth: 'max-content' }}>
-            <div style={{ width: 28, flexShrink: 0 }} />
-            <div style={{ width: 58, padding: '0 10px 0 4px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
+            <div style={{ width: 40, padding: '0 6px 0 8px', fontSize: 11.5, color: 'var(--text-dim)', fontFamily: 'monospace', flexShrink: 0, textAlign: 'right' }}>
               {String(rows.length + 1).padStart(4, '0')}
             </div>
             <div style={{ width: 26, flexShrink: 0 }} />

@@ -163,6 +163,12 @@ html, body {
 /* Typography helpers */
 .font-mono { font-family: 'JetBrains Mono', monospace; }
 
+/* Force grabbing cursor across all elements during drag operation */
+html.cursor-grabbing,
+html.cursor-grabbing * {
+  cursor: grabbing !important;
+}
+
 /* Glass card — reusable */
 .glass-card {
   background: var(--bg-glass);

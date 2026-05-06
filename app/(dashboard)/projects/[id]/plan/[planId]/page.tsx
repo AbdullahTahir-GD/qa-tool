@@ -87,7 +87,12 @@ export default function PlanPage() {
   const [folders, setFolders] = useState<Folder[]>(() => peekCache<Folder[]>(`folders:${planId}`) ?? [])
   const [scripts, setScripts] = useState<Script[]>(() => peekCache<Script[]>(`scripts:${planId}`) ?? [])
   const [runs, setRuns] = useState<TestRun[]>(() => peekCache<TestRun[]>(`runs:${planId}`) ?? [])
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem(`collapsed:${planId}`)
+      return saved ? new Set<string>(JSON.parse(saved)) : new Set<string>()
+    } catch { return new Set<string>() }
+  })
   const [toast, setToast] = useState<string | null>(null)
   const [folderStats, setFolderStats] = useState<Record<string, Stats>>({})
   const [scriptStats, setScriptStats] = useState<Record<string, Stats>>({})
@@ -398,7 +403,7 @@ export default function PlanPage() {
   const handleAddScript = (folderId: string) => {
     setAddingScriptInFolder(folderId)
     setFolderMenu(null)
-    if (collapsed.has(folderId)) setCollapsed(prev => { const n=new Set(prev); n.delete(folderId); return n })
+    if (collapsed.has(folderId)) setCollapsed(prev => { const n=new Set(prev); n.delete(folderId); try { localStorage.setItem(`collapsed:${planId}`, JSON.stringify([...n])) } catch {} return n })
   }
 
   const handleSaveScript = async (e: React.FormEvent, folderId: string) => {
@@ -554,59 +559,120 @@ export default function PlanPage() {
     setImportLoading(false)
   }
 
-  // ── Drag-and-drop: folders ──
-  const handleFolderDragStart = (e: React.DragEvent, folderId: string) => {
-    setDraggingFolderId(folderId)
-    e.dataTransfer.effectAllowed = 'move'
-  }
-  const handleFolderDragOver = (e: React.DragEvent, folderId: string) => {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    if (folderId !== draggingFolderId) setDragOverFolderId(folderId)
-  }
-  const handleFolderDrop = (e: React.DragEvent, targetFolderId: string) => {
-    e.preventDefault()
-    if (!draggingFolderId || draggingFolderId === targetFolderId) { setDraggingFolderId(null); setDragOverFolderId(null); return }
-    const newFolders = [...folders]
-    const fromIdx = newFolders.findIndex(f => f.id === draggingFolderId)
-    const toIdx   = newFolders.findIndex(f => f.id === targetFolderId)
-    if (fromIdx < 0 || toIdx < 0) return
-    const [moved] = newFolders.splice(fromIdx, 1)
-    newFolders.splice(toIdx, 0, moved)
-    const reordered = newFolders.map((f, i) => ({ ...f, order: i }))
-    setFolders(reordered)
-    setDraggingFolderId(null); setDragOverFolderId(null)
-    reordered.forEach(f => updateFolder(planId, f.id, { order: f.order }).catch(console.error))
+  // ── Mouse-event-based drag-and-drop (gives full cursor control, no native HTML5 DnD) ──
+  // Refs hold latest values for the document-level listeners, avoiding stale closures
+  const foldersRefDnD = useRef(folders)
+  const scriptsRefDnD = useRef(scripts)
+  useEffect(() => { foldersRefDnD.current = folders }, [folders])
+  useEffect(() => { scriptsRefDnD.current = scripts }, [scripts])
+
+  const startFolderDrag = (e: React.MouseEvent, folderId: string) => {
+    if (e.button !== 0) return
+    // ignore if clicking on inputs/buttons inside the header
+    const tgt = e.target as HTMLElement
+    if (tgt.closest('input, button, [data-no-drag]')) return
+    const startX = e.clientX, startY = e.clientY
+    let dragging = false
+    let lastOver: string | null = null
+    // Show grabbing cursor immediately so user gets instant feedback
+    document.documentElement.classList.add('cursor-grabbing')
+
+    const onMove = (m: MouseEvent) => {
+      if (!dragging) {
+        if (Math.abs(m.clientX - startX) < 5 && Math.abs(m.clientY - startY) < 5) return
+        dragging = true
+        setDraggingFolderId(folderId)
+      }
+      // detect hover target
+      const el = document.elementFromPoint(m.clientX, m.clientY) as HTMLElement | null
+      const overEl = el?.closest('[data-folder-id]') as HTMLElement | null
+      const overId = overEl?.getAttribute('data-folder-id') ?? null
+      if (overId !== lastOver) {
+        lastOver = overId
+        setDragOverFolderId(overId && overId !== folderId ? overId : null)
+      }
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.documentElement.classList.remove('cursor-grabbing')
+      if (dragging && lastOver && lastOver !== folderId) {
+        const fs = foldersRefDnD.current
+        const newFolders = [...fs]
+        const fromIdx = newFolders.findIndex(f => f.id === folderId)
+        const toIdx = newFolders.findIndex(f => f.id === lastOver)
+        if (fromIdx >= 0 && toIdx >= 0) {
+          const [moved] = newFolders.splice(fromIdx, 1)
+          newFolders.splice(toIdx, 0, moved)
+          const reordered = newFolders.map((f, i) => ({ ...f, order: i }))
+          setFolders(reordered)
+          reordered.forEach(f => updateFolder(planId, f.id, { order: f.order }).catch(console.error))
+        }
+      }
+      // Suppress the click that fires after mouseup if we actually dragged
+      if (dragging) {
+        const blockClick = (ev: MouseEvent) => { ev.stopPropagation(); ev.preventDefault() }
+        document.addEventListener('click', blockClick, { capture: true, once: true })
+      }
+      setDraggingFolderId(null); setDragOverFolderId(null)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   }
 
-  // ── Drag-and-drop: scripts ──
-  const handleScriptDragStart = (e: React.DragEvent, scriptId: string) => {
-    setDraggingScriptId(scriptId)
-    e.dataTransfer.effectAllowed = 'move'
-  }
-  const handleScriptDragOver = (e: React.DragEvent, scriptId: string) => {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    if (scriptId !== draggingScriptId) setDragOverScriptId(scriptId)
-  }
-  const handleScriptDrop = (e: React.DragEvent, targetScriptId: string) => {
-    e.preventDefault()
-    if (!draggingScriptId || draggingScriptId === targetScriptId) { setDraggingScriptId(null); setDragOverScriptId(null); return }
-    const src = scripts.find(s => s.id === draggingScriptId)
-    const tgt = scripts.find(s => s.id === targetScriptId)
-    if (!src || !tgt || src.folderId !== tgt.folderId) return // only reorder within same folder
-    const folderScripts = scripts.filter(s => s.folderId === src.folderId)
-    const fromIdx = folderScripts.findIndex(s => s.id === draggingScriptId)
-    const toIdx   = folderScripts.findIndex(s => s.id === targetScriptId)
-    const [moved] = folderScripts.splice(fromIdx, 1)
-    folderScripts.splice(toIdx, 0, moved)
-    const reordered = folderScripts.map((s, i) => ({ ...s, order: i }))
-    setScripts(prev => {
-      const others = prev.filter(s => s.folderId !== src.folderId)
-      return [...others, ...reordered].sort((a, b) => a.order - b.order)
-    })
-    setDraggingScriptId(null); setDragOverScriptId(null)
-    reordered.forEach(s => updateScript(planId, s.id, { order: s.order }).catch(console.error))
+  const startScriptDrag = (e: React.MouseEvent, scriptId: string) => {
+    if (e.button !== 0) return
+    const tgt = e.target as HTMLElement
+    if (tgt.closest('input, button, [data-no-drag]')) return
+    const startX = e.clientX, startY = e.clientY
+    let dragging = false
+    let lastOver: string | null = null
+    document.documentElement.classList.add('cursor-grabbing')
+
+    const onMove = (m: MouseEvent) => {
+      if (!dragging) {
+        if (Math.abs(m.clientX - startX) < 5 && Math.abs(m.clientY - startY) < 5) return
+        dragging = true
+        setDraggingScriptId(scriptId)
+      }
+      const el = document.elementFromPoint(m.clientX, m.clientY) as HTMLElement | null
+      const overEl = el?.closest('[data-script-id]') as HTMLElement | null
+      const overId = overEl?.getAttribute('data-script-id') ?? null
+      if (overId !== lastOver) {
+        lastOver = overId
+        setDragOverScriptId(overId && overId !== scriptId ? overId : null)
+      }
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.documentElement.classList.remove('cursor-grabbing')
+      if (dragging && lastOver && lastOver !== scriptId) {
+        const ss = scriptsRefDnD.current
+        const src = ss.find(s => s.id === scriptId)
+        const tgt = ss.find(s => s.id === lastOver)
+        if (src && tgt && src.folderId === tgt.folderId) {
+          const folderScripts = ss.filter(s => s.folderId === src.folderId)
+          const fromIdx = folderScripts.findIndex(s => s.id === scriptId)
+          const toIdx = folderScripts.findIndex(s => s.id === lastOver)
+          const [moved] = folderScripts.splice(fromIdx, 1)
+          folderScripts.splice(toIdx, 0, moved)
+          const reordered = folderScripts.map((s, i) => ({ ...s, order: i }))
+          setScripts(prev => {
+            const others = prev.filter(s => s.folderId !== src.folderId)
+            return [...others, ...reordered].sort((a, b) => a.order - b.order)
+          })
+          reordered.forEach(s => updateScript(planId, s.id, { order: s.order }).catch(console.error))
+        }
+      }
+      if (dragging) {
+        const blockClick = (ev: MouseEvent) => { ev.stopPropagation(); ev.preventDefault() }
+        document.addEventListener('click', blockClick, { capture: true, once: true })
+      }
+      setDraggingScriptId(null); setDragOverScriptId(null)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   }
 
   const openImportModal = () => {
@@ -767,14 +833,11 @@ export default function PlanPage() {
 
         return (
           <div key={folder.id}
-            style={{ marginBottom:14, opacity: isFolderDuplicating ? 0.6 : draggingFolderId === folder.id ? 0.4 : 1, transition:'opacity 0.15s' }}
-            onDragOver={e => handleFolderDragOver(e, folder.id)}
-            onDrop={e => handleFolderDrop(e, folder.id)}>
+            data-folder-id={folder.id}
+            style={{ marginBottom:14, opacity: isFolderDuplicating ? 0.6 : draggingFolderId === folder.id ? 0.4 : 1, transition:'opacity 0.15s' }}>
             {/* Folder header */}
             <div
-              draggable={!isFolderDuplicating}
-              onDragStart={e => handleFolderDragStart(e, folder.id)}
-              onDragEnd={() => { setDraggingFolderId(null); setDragOverFolderId(null) }}
+              onMouseDown={e => { if (!isFolderDuplicating) startFolderDrag(e, folder.id) }}
               onContextMenu={e => { if (!isFolderDuplicating) handleFolderCtx(e, folder.id) }}
               style={{
                 display:'flex', alignItems:'center', gap:10, padding:'12px 18px',
@@ -784,11 +847,16 @@ export default function PlanPage() {
                 border: dragOverFolderId === folder.id ? '1px solid rgba(14,165,233,0.60)' : '1px solid rgba(14,165,233,0.22)',
                 borderLeft:'3px solid #0ea5e9',
                 borderRadius: isCollapsed ? 11 : '11px 11px 0 0',
-                cursor: isFolderDuplicating ? 'wait' : 'grab', userSelect:'none',
+                cursor: isFolderDuplicating ? 'wait' : draggingFolderId === folder.id ? 'grabbing' : 'default', userSelect:'none',
                 transition:'background 0.12s, border-color 0.12s',
-              }}
-              onClick={() => { if (!isFolderDuplicating) setCollapsed(prev => { const n=new Set(prev); n.has(folder.id)?n.delete(folder.id):n.add(folder.id); return n }) }}>
-              <span style={{ fontSize:12, color:'var(--text-secondary)', flexShrink:0 }}>{isCollapsed ? '▶' : '▼'}</span>
+              }}>
+              <span
+                data-no-drag
+                onClick={e => { e.stopPropagation(); if (!isFolderDuplicating) setCollapsed(prev => { const n=new Set(prev); n.has(folder.id)?n.delete(folder.id):n.add(folder.id); try { localStorage.setItem(`collapsed:${planId}`, JSON.stringify([...n])) } catch {} return n }) }}
+                style={{ fontSize:12, color:'var(--text-secondary)', flexShrink:0, cursor:'pointer', padding:'4px 6px', borderRadius:4, transition:'background 0.1s' }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(14,165,233,0.15)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+              >{isCollapsed ? '▶' : '▼'}</span>
               <FolderOpen size={15} color="var(--text-body-dim)" style={{ flexShrink:0 }} />
               {editingFolderId === folder.id ? (
                 <input autoFocus value={editFolderName}
@@ -815,13 +883,10 @@ export default function PlanPage() {
                   const isDuplicating = script.id.startsWith('dup_')
                   return (
                     <div key={script.id}
-                      draggable={!isDuplicating}
-                      onDragStart={e => handleScriptDragStart(e, script.id)}
-                      onDragOver={e => handleScriptDragOver(e, script.id)}
-                      onDrop={e => handleScriptDrop(e, script.id)}
-                      onDragEnd={() => { setDraggingScriptId(null); setDragOverScriptId(null) }}
+                      data-script-id={script.id}
                       style={{ opacity: draggingScriptId === script.id ? 0.4 : 1, transition:'opacity 0.15s' }}>
                       <div
+                        onMouseDown={e => { if (!isDuplicating) startScriptDrag(e, script.id) }}
                         onContextMenu={e => { if (!isDuplicating) handleScriptCtx(e, script.id) }}
                         onClick={() => { if (!isDuplicating) router.push(`/projects/${id}/plan/${planId}/script/${script.id}`) }}
                         style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 18px 11px 14px', background: dragOverScriptId === script.id ? 'rgba(14,165,233,0.08)' : 'var(--bg-surface)', borderBottom: idx < folderScripts.length-1 || addingScriptInFolder===folder.id ? '1px solid var(--border)' : 'none', borderLeft: dragOverScriptId === script.id ? '3px solid #0ea5e9' : '3px solid transparent', cursor: isDuplicating ? 'wait' : 'pointer', transition:'background 0.1s, border-color 0.1s', opacity: isDuplicating ? 0.55 : 1 }}

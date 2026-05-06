@@ -359,12 +359,14 @@ const BULK_CHUNK = 1000 // rows per INSERT batch — 1 call per 1000 rows, well 
 
 // Internal: duplicate a script given the source object
 // targetFolderId: override the folder (used by duplicateFolder to place scripts in the new folder)
-async function _dupScript(planId: string, src: Script, preOrder?: number, targetFolderId?: string): Promise<Script> {
+// keepName: when true, do NOT append " (Copy)" to the name (used by duplicateFolder so only the folder gets the suffix)
+async function _dupScript(planId: string, src: Script, preOrder?: number, targetFolderId?: string, keepName?: boolean): Promise<Script> {
   const folderId = targetFolderId ?? src.folderId
+  const newName = keepName ? src.name : src.name + ' (Copy)'
 
   // ── Phase 1 (parallel): create script + fetch source rows simultaneously ──
   const [copy, srcRows] = await Promise.all([
-    saveScript(planId, folderId, src.name + ' (Copy)', src.description, preOrder),
+    saveScript(planId, folderId, newName, src.description, preOrder),
     getRows(src.id),
   ])
 
@@ -436,8 +438,9 @@ export async function duplicateFolder(planId: string, folderId: string): Promise
   const copy = await saveFolder(planId, src.name + ' (Copy)', folders.length)
   // Bounded concurrency — run at most 5 script duplications at once regardless of folder size
   // Pass copy.id so scripts are placed in the NEW folder, not the original
+  // Pass keepName=true so scripts inside the copied folder keep their original names (only the folder shows "(Copy)")
   await _pool(
-    folderScripts.map((script, i) => () => _dupScript(planId, script, scripts.length + i, copy.id)),
+    folderScripts.map((script, i) => () => _dupScript(planId, script, scripts.length + i, copy.id, true)),
     5
   )
   _del(`folders:${planId}`, `scripts:${planId}`)

@@ -1,5 +1,5 @@
 'use client'
-import { Suspense } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { SidebarContent } from '@/components/layout/sidebar'
 import { TopnavContent } from '@/components/layout/topnav'
 import { SidebarProvider, useSidebar } from '@/components/providers/sidebar-context'
@@ -14,6 +14,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
 function Shell({ children }: { children: React.ReactNode }) {
   const { open, isMobile, toggle } = useSidebar()
+  // Skip width transition on the very first render after hydration —
+  // prevents the open→close flash when localStorage says the sidebar should be closed.
+  const [animateSidebar, setAnimateSidebar] = useState(false)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setAnimateSidebar(true))
+    return () => cancelAnimationFrame(id)
+  }, [])
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-base)', display: 'flex' }}>
@@ -34,7 +41,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       <aside style={{
         width: open ? 'var(--sidebar-width)' : 0,
         overflow: 'hidden',
-        transition: 'width 0.24s cubic-bezier(0.4,0,0.2,1)',
+        transition: animateSidebar ? 'width 0.24s cubic-bezier(0.4,0,0.2,1)' : 'none',
         flexShrink: 0,
         position: 'fixed',
         top: 0, left: 0,
@@ -49,7 +56,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       {/* ── Main ── */}
       <div style={{
         marginLeft: open && !isMobile ? 'var(--sidebar-width)' : 0,
-        transition: 'margin-left 0.24s cubic-bezier(0.4,0,0.2,1)',
+        transition: animateSidebar ? 'margin-left 0.24s cubic-bezier(0.4,0,0.2,1)' : 'none',
         flex: 1, display: 'flex', flexDirection: 'column', minHeight: '100vh',
         minWidth: 0,
       }}>
