@@ -1823,7 +1823,7 @@ export default function ScriptPage() {
                 {/* Comments */}
                 <div style={{ padding:'10px 14px 0', flexShrink:0 }}>
                   <label style={{ fontSize:9, fontWeight:700, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:5, display:'block' }}>Comments</label>
-                  <textarea ref={panelCommentRef} onBlur={savePanelNote}
+                  <textarea ref={panelCommentRef}
                     placeholder="Add observations or notes for this test case..."
                     rows={3}
                     style={{ width:'100%', padding:'8px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:8, fontSize:12, color:'var(--text-body)', resize:'none', outline:'none', fontFamily:'inherit', boxSizing:'border-box', transition:'border-color 0.13s' }}
@@ -1834,7 +1834,7 @@ export default function ScriptPage() {
                 {/* Bug tracking */}
                 <div style={{ padding:'8px 14px 0', flexShrink:0 }}>
                   <label style={{ display:'block', fontSize:9, fontWeight:700, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:5 }}>Bug / Ticket</label>
-                  <input ref={panelBugIdRef} onBlur={savePanelNote}
+                  <input ref={panelBugIdRef}
                     placeholder="e.g. BUG-123 or JIRA-456"
                     style={{ width:'100%', padding:'8px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:8, fontSize:12, color:'var(--text-body)', outline:'none', boxSizing:'border-box', transition:'border-color 0.13s' }}
                     onFocus={e => (e.target.style.borderColor='rgba(14,165,233,0.5)')}
