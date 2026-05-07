@@ -230,7 +230,9 @@ function SidebarInner() {
   const handleDeleteProject = async (projectId: string) => {
     await deleteProject(projectId)
     setCtxMenu(null)
-    refresh()
+    // Bust ALL caches (personal + team) so stale data can't bring the project back
+    forceRefresh()
+    // Redirect away from any page under the deleted project
     if (pathname.includes('/projects/' + projectId)) router.push('/projects')
   }
 
