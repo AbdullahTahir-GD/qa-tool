@@ -481,7 +481,7 @@ export async function insertRowBefore(scriptId: string, beforeRowId: string, typ
   _del(`rows:${scriptId}`)
   const rows = await getRows(scriptId)
   const beforeRow = rows.find(r => r.id === beforeRowId)
-  if (!beforeRow) return saveRow(scriptId, '', '', type, preId ? { id: preId, order: 0 } : undefined)
+  if (!beforeRow) return saveRow(scriptId, '', '', type, preId ? { id: preId, order: rows.length } : undefined)
   const id = preId ?? uid()
   const toShift = rows.filter(r => r.order >= beforeRow.order)
   // Batch into groups of 50 to avoid overwhelming the connection pool

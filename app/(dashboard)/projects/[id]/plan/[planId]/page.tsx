@@ -3,16 +3,16 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useRouter } from 'next/navigation'
 import {
-  getProjects, getProjectById, getPlans, getFolders, saveFolder, deleteFolder, updateFolder,
+  getProjects, getProjectById, getPlans, savePlan, getFolders, saveFolder, deleteFolder, updateFolder,
   getScripts, saveScript, deleteScript, updateScript, duplicateScript, duplicateFolder,
   getTestRuns, getRows, getResults, computeStats, sumStats, peekCache, invalidateCache,
-  saveRow, generateId,
+  saveRow, generateId, getMyTeams, getTeamProjects,
   type Project, type TestPlan, type Folder, type Script, type TestRun, type TestRow, type TestResult, type Stats
 } from '@/lib/db'
 import { supabase } from '@/lib/supabase'
 
 function zeroStats(): Stats { return { pass:0, fail:0, blocked:0, query:0, exclude:0, done:0, total:0, pct:0 } }
-import { Home, ChevronDown, ChevronRight, Plus, FolderOpen, FileText, Upload } from 'lucide-react'
+import { Home, ChevronDown, ChevronRight, Plus, FolderOpen, FileText, Upload, Search, X } from 'lucide-react'
 
 const C = { pass:'#22c55e', fail:'#ef4444', blocked:'#f59e0b', query:'#38bdf8' }
 
@@ -128,6 +128,15 @@ export default function PlanPage() {
   const [importLoading, setImportLoading] = useState(false)
   const importFileRef = useRef<HTMLInputElement>(null)
 
+  // Copy folder to another project modal state
+  const [copyFolderOpen, setCopyFolderOpen] = useState(false)
+  const [copyFolderSrcId, setCopyFolderSrcId] = useState('')
+  const [copyFolderSrcName, setCopyFolderSrcName] = useState('')
+  const [copyTargetProjects, setCopyTargetProjects] = useState<Project[]>([])
+  const [copyLoading, setCopyLoading] = useState(false)
+  const [copyingToProjectId, setCopyingToProjectId] = useState<string | null>(null)
+  const [copySearch, setCopySearch] = useState('')
+
   const folderDDRef = useRef<HTMLDivElement>(null)
   const scriptDDRef = useRef<HTMLDivElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
@@ -201,25 +210,20 @@ export default function PlanPage() {
     const scriptRowsMap: Record<string, TestRow[]> = {}
     s.forEach((sc, i) => { scriptRowsMap[sc.id] = allRowsList[i] })
 
-    // Check if any script has runs
-    const anyRuns = s.some(sc => (scriptRunsMap[sc.id]?.length ?? 0) > 0)
-    if (!anyRuns) {
-      setFolderStats({}); setScriptStats({}); setPlanStats(null)
-      return
+    // Fetch results for all runs across all scripts (skip if no runs at all)
+    const allRuns = s.flatMap(sc => scriptRunsMap[sc.id] ?? [])
+    const runResultsMap: Record<string, TestResult[]> = {}
+    if (allRuns.length > 0) {
+      const allResultsList = await Promise.all(allRuns.map(run => getResults(run.id)))
+      allRuns.forEach((run, i) => { runResultsMap[run.id] = allResultsList[i] })
     }
 
-    // Fetch results for all runs across all scripts
-    const allRuns = s.flatMap(sc => scriptRunsMap[sc.id] ?? [])
-    const allResultsList = await Promise.all(allRuns.map(run => getResults(run.id)))
-    const runResultsMap: Record<string, TestResult[]> = {}
-    allRuns.forEach((run, i) => { runResultsMap[run.id] = allResultsList[i] })
-
-    // Compute per-script stats using only that script's own runs
+    // Compute per-script stats — always populate total from row count even with no runs
     const sStats: Record<string, Stats> = {}
     for (const sc of s) {
       const caseRowsSc = scriptRowsMap[sc.id].filter(rw => rw.type === 'case')
       const scriptRuns = scriptRunsMap[sc.id] ?? []
-      if (scriptRuns.length === 0) { sStats[sc.id] = zeroStats(); continue }
+      if (scriptRuns.length === 0) { sStats[sc.id] = { ...zeroStats(), total: caseRowsSc.length }; continue }
       sStats[sc.id] = sumStats(scriptRuns.map(run => computeStats(caseRowsSc, runResultsMap[run.id])))
     }
 
@@ -231,7 +235,7 @@ export default function PlanPage() {
     }
 
     setScriptStats(sStats); setFolderStats(fStats)
-    setPlanStats(sumStats(Object.values(fStats)))
+    setPlanStats(allRuns.length > 0 ? sumStats(Object.values(fStats)) : null)
     } finally { reloadingRef.current = false }
   }, [planId])
 
@@ -375,19 +379,20 @@ export default function PlanPage() {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const ctxPos = (e: React.MouseEvent, menuW = 220, menuH = 180) => ({
-    x: Math.min(e.clientX, window.innerWidth  - menuW - 8),
-    y: Math.min(e.clientY, window.innerHeight - menuH - 8),
-  })
+  const ctxPos = (e: React.MouseEvent, menuW = 220, menuH = 260) => {
+    const x = e.clientX + menuW + 8 > window.innerWidth  ? e.clientX - menuW : e.clientX
+    const y = e.clientY + menuH + 8 > window.innerHeight ? e.clientY - menuH : e.clientY
+    return { x: Math.max(8, x), y: Math.max(8, y) }
+  }
 
   const handleFolderCtx = (e: React.MouseEvent, folderId: string) => {
     e.preventDefault(); e.stopPropagation()
-    const { x, y } = ctxPos(e, 220, 140)
+    const { x, y } = ctxPos(e, 220, 310)
     setFolderMenu({ x, y, folderId }); setScriptMenu(null)
   }
   const handleScriptCtx = (e: React.MouseEvent, scriptId: string) => {
     e.preventDefault(); e.stopPropagation()
-    const { x, y } = ctxPos(e, 220, 120)
+    const { x, y } = ctxPos(e, 220, 230)
     setScriptMenu({ x, y, scriptId }); setFolderMenu(null)
   }
 
@@ -502,6 +507,105 @@ export default function PlanPage() {
         const cleaned = trimmed.replace(/^[-•*]\s*/, '').replace(/^\d+[.)]\s*/, '')
         return { type: 'case' as const, title: cleaned }
       })
+  }
+
+  const handleExportScript = async (scriptId: string, scriptName: string) => {
+    const rows = await getRows(scriptId)
+    const lines = rows.map(r =>
+      r.type === 'heading' ? r.title.toUpperCase() : r.title
+    )
+    const content = lines.join('\n')
+    const blob = new Blob([content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${scriptName}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const openCopyFolderModal = async (folderId: string, folderName: string) => {
+    setCopyFolderSrcId(folderId)
+    setCopyFolderSrcName(folderName)
+    setCopySearch('')
+    setCopyingToProjectId(null)
+    // Fetch personal + all team projects
+    const [personalProjects, teams] = await Promise.all([getProjects(), getMyTeams()])
+    const teamProjectLists = await Promise.all(teams.map(t => getTeamProjects(t.id)))
+    const teamProjects = teamProjectLists.flat()
+    // Merge and deduplicate
+    const seen = new Set<string>()
+    const allProjects: Project[] = []
+    for (const p of [...personalProjects, ...teamProjects]) {
+      if (!seen.has(p.id)) { seen.add(p.id); allProjects.push(p) }
+    }
+    setCopyTargetProjects(allProjects)
+    setCopyFolderOpen(true)
+  }
+
+  const handleCopyFolderToProject = async (targetProjectId: string) => {
+    if (!targetProjectId || !copyFolderSrcId || copyLoading) return
+    setCopyLoading(true)
+    setCopyingToProjectId(targetProjectId)
+    try {
+      const srcFolder = folders.find(f => f.id === copyFolderSrcId)
+      if (!srcFolder) return
+      const folderScripts = scripts.filter(s => s.folderId === copyFolderSrcId)
+
+      // Step 1: Get/create target plan + fetch ALL rows for all scripts — in parallel
+      const [targetPlans, ...allRows] = await Promise.all([
+        getPlans(targetProjectId),
+        ...folderScripts.map(s => getRows(s.id)),
+      ])
+      const targetPlanId = targetPlans.length > 0
+        ? targetPlans[0].id
+        : (await savePlan(targetProjectId, 'Test Plan')).id
+
+      // Step 2: Create folder, then all scripts in parallel
+      const newFolder = await saveFolder(targetPlanId, srcFolder.name)
+      const newScripts = await Promise.all(
+        folderScripts.map((s, i) => saveScript(targetPlanId, newFolder.id, s.name, '', i))
+      )
+
+      // Step 3: Bulk insert ALL rows from all scripts in one single DB call
+      const allBulkRows = folderScripts.flatMap((_, si) =>
+        (allRows[si] || []).map((r, i) => ({
+          id: generateId(), script_id: newScripts[si].id,
+          type: r.type, number: r.number, title: r.title, sort_order: i,
+        }))
+      )
+      const CHUNK = 500
+      await Promise.all(
+        Array.from({ length: Math.ceil(allBulkRows.length / CHUNK) }, (_, i) =>
+          supabase.from('rows').insert(allBulkRows.slice(i * CHUNK, (i + 1) * CHUNK)).then(({ error }) => { if (error) throw error })
+        )
+      )
+
+      showToast(`Folder "${srcFolder.name}" copied successfully ✓`)
+      setCopyFolderOpen(false)
+    } catch (err) {
+      console.error('Copy folder failed:', err)
+      showToast('Copy failed — check console for details')
+    }
+    setCopyLoading(false)
+  }
+
+  const handleExportFolder = async (folderId: string, folderName: string) => {
+    const folderScripts = scripts.filter(s => s.folderId === folderId)
+    const sections: string[] = []
+    for (const s of folderScripts) {
+      const rows = await getRows(s.id)
+      const lines = rows.map(r => r.type === 'heading' ? r.title.toUpperCase() : r.title)
+      sections.push(`=== ${s.name} ===\n` + lines.join('\n'))
+    }
+    const content = sections.join('\n\n')
+    const blob = new Blob([content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${folderName}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -870,9 +974,7 @@ export default function PlanPage() {
               )}
 
               {/* All-runs stats for folder */}
-              {runs.length > 0 && (
-                <StatBlock pass={folderSt.pass} fail={folderSt.fail} blocked={folderSt.blocked} query={folderSt.query} done={folderSt.done} total={folderSt.total} pct={folderSt.pct} />
-              )}
+              <StatBlock pass={folderSt.pass} fail={folderSt.fail} blocked={folderSt.blocked} query={folderSt.query} done={folderSt.done} total={folderSt.total} pct={folderSt.pct} />
             </div>
 
             {/* Scripts list */}
@@ -919,7 +1021,7 @@ export default function PlanPage() {
                         )}
 
                         {/* All-runs stats for script */}
-                        {runs.length > 0 && !isDuplicating && (
+                        {!isDuplicating && (
                           <StatBlock pass={scriptSt.pass} fail={scriptSt.fail} blocked={scriptSt.blocked} query={scriptSt.query} done={scriptSt.done} total={scriptSt.total} pct={scriptSt.pct} />
                         )}
                         {isDuplicating && <span style={{ fontSize:11, color:'var(--text-muted)', flexShrink:0 }}>copying…</span>}
@@ -989,6 +1091,7 @@ export default function PlanPage() {
               showToast('Duplication failed ✗')
             }
           }} />
+          <CtxItem label="Copy to another project" onClick={async () => { const f=folders.find(x=>x.id===folderMenu.folderId); if(f) { setFolderMenu(null); await openCopyFolderModal(f.id, f.name) } }} />
           <div style={{ height:1, background:'var(--border)', margin:'5px 0' }} />
           <CtxItem label="Delete folder" danger onClick={async () => { if (confirm('Delete this folder and all scripts inside?')) { await deleteFolder(planId, folderMenu.folderId); reload() } setFolderMenu(null) }} />
         </div>,
@@ -1021,6 +1124,7 @@ export default function PlanPage() {
               showToast('Duplication failed ✗')
             }
           }} />
+          <CtxItem label="Export script" onClick={async () => { const s=scripts.find(x=>x.id===scriptMenu.scriptId); if(s) await handleExportScript(s.id, s.name); setScriptMenu(null) }} />
           <div style={{ height:1, background:'var(--border)', margin:'5px 0' }} />
           <CtxItem label="Delete script" danger onClick={async () => { if (confirm('Delete this script?')) { await deleteScript(planId, scriptMenu.scriptId); reload() } setScriptMenu(null) }} />
         </div>,
@@ -1185,6 +1289,146 @@ export default function PlanPage() {
                   </button>
                 )
               })()}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ── Copy Folder to Another Project Modal ── */}
+      {copyFolderOpen && createPortal(
+        <div
+          onClick={() => { if (!copyLoading) setCopyFolderOpen(false) }}
+          style={{
+            position:'fixed', inset:0, zIndex:99999,
+            background:'rgba(0,0,0,0.6)', backdropFilter:'blur(8px)',
+            display:'flex', alignItems:'center', justifyContent:'center', padding:20,
+          }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            width:'100%', maxWidth:460,
+            background:'var(--bg-surface)',
+            border:'1px solid rgba(14,165,233,0.2)',
+            borderRadius:20,
+            boxShadow:'0 32px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(14,165,233,0.08)',
+            overflow:'hidden',
+          }}>
+            {/* Header */}
+            <div style={{
+              padding:'20px 24px 16px',
+              borderBottom:'1px solid var(--border)',
+              background:'linear-gradient(135deg, rgba(14,165,233,0.06) 0%, transparent 100%)',
+            }}>
+              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+                  <div style={{
+                    width:40, height:40, borderRadius:12, flexShrink:0,
+                    background:'linear-gradient(135deg, #0ea5e9, #0284c7)',
+                    display:'flex', alignItems:'center', justifyContent:'center',
+                    boxShadow:'0 4px 14px rgba(14,165,233,0.4)',
+                  }}>
+                    <FolderOpen size={18} color="white" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize:15, fontWeight:800, color:'var(--text-primary)', letterSpacing:'-0.3px' }}>Copy to another project</div>
+                    <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:2, display:'flex', alignItems:'center', gap:5 }}>
+                      <span style={{ background:'rgba(14,165,233,0.12)', color:'var(--accent)', padding:'1px 7px', borderRadius:4, fontSize:11, fontWeight:600 }}>{copyFolderSrcName}</span>
+                      <span>will be copied</span>
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => { if (!copyLoading) setCopyFolderOpen(false) }}
+                  style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-dim)', padding:4, borderRadius:6, flexShrink:0, marginTop:2 }}
+                  onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
+                  onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}>
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* Search */}
+              <div style={{ marginTop:14, position:'relative' }}>
+                <Search size={13} color="var(--text-dim)" style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }} />
+                <input
+                  autoFocus
+                  placeholder="Search projects…"
+                  value={copySearch}
+                  onChange={e => setCopySearch(e.target.value)}
+                  style={{
+                    width:'100%', padding:'8px 10px 8px 32px', boxSizing:'border-box',
+                    borderRadius:9, border:'1px solid var(--border)',
+                    background:'var(--bg-elevated)', color:'var(--text-primary)',
+                    fontSize:13, outline:'none',
+                  }}
+                  onFocus={e => (e.target.style.borderColor = '#0ea5e9')}
+                  onBlur={e => (e.target.style.borderColor = 'var(--border)')}
+                />
+              </div>
+            </div>
+
+            {/* Project list */}
+            <div style={{ maxHeight:300, overflowY:'auto', padding:'8px 12px' }}>
+              {(() => {
+                const filtered = copyTargetProjects.filter(p =>
+                  p.name.toLowerCase().includes(copySearch.toLowerCase())
+                )
+                if (filtered.length === 0) return (
+                  <div style={{ padding:'32px 0', textAlign:'center' }}>
+                    <div style={{ fontSize:24, marginBottom:8 }}>🔍</div>
+                    <div style={{ fontSize:13, color:'var(--text-dim)' }}>No projects found</div>
+                  </div>
+                )
+                return filtered.map(p => {
+                  const isCopying = copyingToProjectId === p.id && copyLoading
+                  return (
+                    <button
+                      key={p.id}
+                      disabled={copyLoading}
+                      onClick={() => handleCopyFolderToProject(p.id)}
+                      style={{
+                        display:'flex', alignItems:'center', gap:12, width:'100%',
+                        padding:'10px 12px', borderRadius:10, marginBottom:4,
+                        cursor: copyLoading ? 'not-allowed' : 'pointer',
+                        background: isCopying ? 'rgba(14,165,233,0.1)' : 'transparent',
+                        border: isCopying ? '1px solid rgba(14,165,233,0.3)' : '1px solid transparent',
+                        color:'var(--text-primary)', fontSize:13, fontWeight:500,
+                        textAlign:'left', transition:'all 0.12s',
+                        opacity: copyLoading && !isCopying ? 0.45 : 1,
+                      }}
+                      onMouseEnter={e => { if (!copyLoading) { e.currentTarget.style.background='var(--bg-elevated)'; e.currentTarget.style.borderColor='var(--border)' } }}
+                      onMouseLeave={e => { if (!isCopying) { e.currentTarget.style.background='transparent'; e.currentTarget.style.borderColor='transparent' } }}>
+                      {/* Project avatar */}
+                      <div style={{
+                        width:34, height:34, borderRadius:9, flexShrink:0,
+                        background:`linear-gradient(135deg, hsl(${(p.name.charCodeAt(0)*7)%360},65%,52%), hsl(${(p.name.charCodeAt(0)*7+40)%360},70%,42%))`,
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                        fontSize:13, fontWeight:800, color:'white',
+                        boxShadow:'0 2px 8px rgba(0,0,0,0.18)',
+                      }}>
+                        {p.name[0].toUpperCase()}
+                      </div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontWeight:600, fontSize:13, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}</div>
+                        <div style={{ fontSize:11, color:'var(--text-dim)', marginTop:1 }}>{p.teamId ? 'Team project' : 'Personal project'}</div>
+                      </div>
+                      {isCopying ? (
+                        <div style={{ fontSize:11, color:'var(--accent)', fontWeight:600, flexShrink:0 }}>Copying…</div>
+                      ) : (
+                        <ChevronRight size={14} color="var(--text-dim)" style={{ flexShrink:0 }} />
+                      )}
+                    </button>
+                  )
+                })
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding:'12px 24px', borderTop:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span style={{ fontSize:11, color:'var(--text-dim)' }}>{copyTargetProjects.length} project{copyTargetProjects.length !== 1 ? 's' : ''} available</span>
+              <button
+                onClick={() => setCopyFolderOpen(false)}
+                disabled={copyLoading}
+                style={{ padding:'7px 18px', fontSize:13, fontWeight:500, background:'transparent', border:'1px solid var(--border-strong)', borderRadius:8, color:'var(--text-secondary)', cursor:'pointer', opacity: copyLoading ? 0.5 : 1 }}>
+                Cancel
+              </button>
             </div>
           </div>
         </div>,

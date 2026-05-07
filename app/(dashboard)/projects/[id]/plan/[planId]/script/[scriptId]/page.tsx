@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { useParams, useRouter } from 'next/navigation'
 import { FileText } from 'lucide-react'
 import {
-  getScripts, getRows, saveRow, insertRowBefore, updateRow, deleteRow,
+  getScripts, getRows, saveRow, insertRowBefore, updateRow, deleteRow, reorderRows,
   getTestRuns, saveTestRun, deleteTestRun, updateTestRun,
   getResult, setResult, getResults,
   getDetail, saveDetail, generateId, computeStats, sumStats, peekCache, invalidateCache,
@@ -400,6 +400,8 @@ export default function ScriptPage() {
   allRunsStatsRef.current = allRunsStats
   const topStatsRef = useRef(topStats)
   topStatsRef.current = topStats
+  // Track run IDs being deleted so polling can't flash them back before DB confirms
+  const deletingRunIdsRef = useRef<Set<string>>(new Set())
 
   // reload() — two modes:
   //   skipResults=false (default): full reload including results (initial load, explicit refreshes)
@@ -423,16 +425,18 @@ export default function ScriptPage() {
       return rws
     })
     setRuns(prev => {
-      if (prev.length === rns.length) {
+      // Filter out any runs currently being deleted so polling can't flash them back
+      const filtered = rns.filter(r => !deletingRunIdsRef.current.has(r.id))
+      if (prev.length === filtered.length) {
         let identical = true
         for (let i = 0; i < prev.length; i++) {
-          const a = prev[i], b = rns[i]
+          const a = prev[i], b = filtered[i]
           if (a.id !== b.id || a.tester !== b.tester || a.build !== b.build
               || a.status !== b.status || a.number !== b.number) { identical = false; break }
         }
         if (identical) return prev
       }
-      return rns
+      return filtered
     })
 
     const runStillExists = currentActiveRunId ? rns.some(r => r.id === currentActiveRunId) : false
@@ -1600,7 +1604,7 @@ export default function ScriptPage() {
                         {panelVisible ? '× Panel' : '▶ Panel'}
                       </button>
                     )}
-                    <button onClick={e => { e.stopPropagation(); if (confirm('Delete run?')) { setRuns(prev => prev.filter(r => r.id !== run.id)); setResultsMap(prev => { const n = { ...prev }; delete n[run.id]; return n }); if (activeRunId === run.id) { setActiveRunId(null); setActiveRowId(null); setTopStats(null) } deleteTestRun(planId, run.id, scriptId).catch(console.error) } }}
+                    <button onClick={e => { e.stopPropagation(); deletingRunIdsRef.current.add(run.id); setRuns(prev => prev.filter(r => r.id !== run.id)); setResultsMap(prev => { const n = { ...prev }; delete n[run.id]; return n }); if (activeRunId === run.id) { setActiveRunId(null); setActiveRowId(null); setTopStats(null) } deleteTestRun(planId, run.id, scriptId).then(() => { deletingRunIdsRef.current.delete(run.id) }).catch(console.error) }}
                       style={{ flex:1, background:'none', border:'1px solid var(--border)', borderRadius:5, cursor:'pointer', color:'var(--text-muted)', fontSize:10, padding:'3px 4px', textAlign:'center', transition:'all 0.12s' }}
                       onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.1)'; e.currentTarget.style.color='#f87171'; e.currentTarget.style.borderColor='rgba(239,68,68,0.3)' }}
                       onMouseLeave={e => { e.currentTarget.style.background='none'; e.currentTarget.style.color='var(--text-muted)'; e.currentTarget.style.borderColor='var(--border)' }}>
@@ -1680,7 +1684,7 @@ export default function ScriptPage() {
         </div>
       </div>
 
-      {/* ══ RIGHT PANEL (TestPad-style floating) ══ */}
+      {/* ══ RIGHT PANEL ══ */}
       {panelOpen && (
         <div style={{
           width: 'min(365px, 38vw)',
@@ -1696,167 +1700,182 @@ export default function ScriptPage() {
           boxShadow: '-4px 0 24px rgba(0,0,0,0.22)',
           maxHeight: '100%',
         }}>
-          {/* Header */}
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'11px 14px', borderBottom:'1px solid var(--border)', flexShrink:0, background:'var(--bg-depth)' }}>
-            <span style={{ fontSize:12, fontWeight:800, color:'var(--text-primary)', letterSpacing:'0.06em', textTransform:'uppercase' }}>
-              Testing Run {activeRun?.number}
-            </span>
-            <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+          {/* Header — blue gradient matching project accent */}
+          <div style={{ flexShrink:0, background:'linear-gradient(135deg,#0369a1 0%,#0284c7 50%,#0ea5e9 100%)', borderBottom:'1px solid rgba(14,165,233,0.4)', padding:'13px 14px 11px' }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: topStats ? 10 : 0 }}>
+              <div>
+                <div style={{ fontSize:9, fontWeight:700, color:'rgba(255,255,255,0.65)', letterSpacing:'0.14em', textTransform:'uppercase', marginBottom:2 }}>Testing Run #{activeRun?.number}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:'#fff', letterSpacing:'-0.3px' }}>{activeRun?.tester}</div>
+              </div>
               <button onClick={() => setPanelVisible(false)}
-                style={{ background:'var(--bg-surface)', border:'1px solid var(--border-mid)', borderRadius:5, cursor:'pointer', color:'var(--text-secondary)', fontSize:11, fontWeight:600, padding:'4px 10px', transition:'all 0.13s' }}
-                onMouseEnter={e => { e.currentTarget.style.background='#ef4444'; e.currentTarget.style.color='white'; e.currentTarget.style.borderColor='#ef4444' }}
-                onMouseLeave={e => { e.currentTarget.style.background='var(--bg-surface)'; e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.borderColor='var(--border-mid)' }}>
-                close
+                style={{ width:28, height:28, borderRadius:8, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(255,255,255,0.15)', border:'1px solid rgba(255,255,255,0.25)', cursor:'pointer', color:'white', fontSize:16, transition:'all 0.13s', flexShrink:0 }}
+                onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.4)'; e.currentTarget.style.borderColor='rgba(239,68,68,0.6)' }}
+                onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.15)'; e.currentTarget.style.borderColor='rgba(255,255,255,0.25)' }}>
+                ×
               </button>
             </div>
+            {/* Stats pills + progress */}
+            {topStats && (
+              <>
+                <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:8 }}>
+                  {[
+                    { val: topStats.pass,    bg:'rgba(34,197,94,0.25)',   color:'#bbf7d0', label:'P' },
+                    { val: topStats.fail,    bg:'rgba(239,68,68,0.25)',   color:'#fecaca', label:'F' },
+                    { val: topStats.blocked, bg:'rgba(245,158,11,0.25)',  color:'#fde68a', label:'B' },
+                    { val: topStats.query,   bg:'rgba(255,255,255,0.18)', color:'#e0f2fe', label:'Q' },
+                  ].map(({ val, bg, color, label }) => (
+                    <div key={label} style={{ display:'flex', alignItems:'center', gap:4, padding:'2px 8px', borderRadius:20, background:bg }}>
+                      <span style={{ fontSize:9, fontWeight:800, color, letterSpacing:'0.05em' }}>{label}</span>
+                      <span style={{ fontSize:11, fontWeight:700, color }}>{val}</span>
+                    </div>
+                  ))}
+                  <div style={{ flex:1 }} />
+                  <span style={{ fontSize:12, fontWeight:800, color:'white' }}>{topStats.done}<span style={{ color:'rgba(255,255,255,0.5)', fontWeight:500 }}>/{topStats.total}</span></span>
+                  <span style={{ fontSize:11, fontWeight:700, color: topStats.pct >= 80 ? '#bbf7d0' : topStats.pct >= 50 ? '#fde68a' : '#fecaca' }}>{topStats.pct}%</span>
+                </div>
+                <div style={{ height:5, background:'rgba(255,255,255,0.2)', borderRadius:3, overflow:'hidden', display:'flex' }}>
+                  {topStats.pass > 0    && <div style={{ flex:topStats.pass,    background:'#22c55e', borderRadius:3 }} />}
+                  {topStats.fail > 0    && <div style={{ flex:topStats.fail,    background:'#ef4444' }} />}
+                  {topStats.blocked > 0 && <div style={{ flex:topStats.blocked, background:'#f59e0b' }} />}
+                  {(topStats.total - topStats.pass - topStats.fail - topStats.blocked) > 0 && <div style={{ flex:topStats.total - topStats.pass - topStats.fail - topStats.blocked, background:'rgba(255,255,255,0.15)' }} />}
+                </div>
+              </>
+            )}
           </div>
 
-          {/* Stats + progress bar */}
-          {topStats && (
-            <>
-              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 14px 5px', flexShrink:0 }}>
-                <span style={{ fontSize:12, color:'#22c55e', fontWeight:700 }}>● {topStats.pass}</span>
-                <span style={{ fontSize:12, color:'#ef4444', fontWeight:700 }}>● {topStats.fail}</span>
-                <span style={{ fontSize:12, color:'#f59e0b', fontWeight:700 }}>● {topStats.blocked}</span>
-                <span style={{ fontSize:12, color:'#3b82f6', fontWeight:700 }}>● {topStats.query}</span>
-                <span style={{ flex:1 }} />
-                <span style={{ fontSize:12, color:'var(--text-body)', fontWeight:600 }}>{topStats.done}/{topStats.total}</span>
-                <span style={{ fontSize:12, color:'var(--text-muted)', fontWeight:500 }}>{topStats.pct}%</span>
-              </div>
-              <div style={{ height:4, background:'var(--border-track)', margin:'0 14px 10px', borderRadius:2, overflow:'hidden', display:'flex', flexShrink:0 }}>
-                {topStats.pass > 0    && <div style={{ flex:topStats.pass,    background:'#22c55e' }} />}
-                {topStats.fail > 0    && <div style={{ flex:topStats.fail,    background:'#ef4444' }} />}
-                {topStats.blocked > 0 && <div style={{ flex:topStats.blocked, background:'#f59e0b' }} />}
-                {(topStats.total - topStats.pass - topStats.fail - topStats.blocked) > 0 && <div style={{ flex:topStats.total - topStats.pass - topStats.fail - topStats.blocked, background:'var(--border-track)' }} />}
-              </div>
-            </>
-          )}
-
-          {/* IN PROGRESS / COMPLETED tabs */}
-          <div style={{ display:'flex', margin:'0 14px 10px', borderRadius:7, overflow:'hidden', border:'1px solid var(--border-mid)', flexShrink:0 }}>
-            <button onClick={markRunInProgress}
-              style={{ flex:1, padding:'8px', fontSize:11, fontWeight:700, cursor:'pointer', border:'none', transition:'all 0.15s',
-                background: !runIsCompleted ? '#16a34a' : 'var(--bg-depth)',
-                color: !runIsCompleted ? 'white' : 'var(--text-secondary)',
-              }}>
-              IN PROGRESS
-            </button>
-            <button onClick={markRunCompleted}
-              style={{ flex:1, padding:'8px', fontSize:11, fontWeight:700, cursor:'pointer', border:'none', borderLeft:'1px solid var(--border-mid)', transition:'all 0.15s',
-                background: runIsCompleted ? '#16a34a' : 'var(--bg-depth)',
-                color: runIsCompleted ? 'white' : 'var(--text-secondary)',
-              }}>
-              COMPLETED
-            </button>
+          {/* IN PROGRESS / COMPLETED toggle */}
+          <div style={{ padding:'10px 14px 0', flexShrink:0 }}>
+            <div style={{ display:'flex', background:'var(--bg-depth)', borderRadius:9, padding:3, border:'1px solid var(--border-mid)' }}>
+              <button onClick={markRunInProgress}
+                style={{ flex:1, padding:'7px', fontSize:11, fontWeight:700, cursor:'pointer', border:'none', borderRadius:7, transition:'all 0.18s',
+                  background: !runIsCompleted ? 'linear-gradient(135deg,#16a34a,#15803d)' : 'transparent',
+                  color: !runIsCompleted ? 'white' : 'var(--text-secondary)',
+                  boxShadow: !runIsCompleted ? '0 2px 8px rgba(22,163,74,0.4)' : 'none',
+                  letterSpacing:'0.05em',
+                }}>
+                ● IN PROGRESS
+              </button>
+              <button onClick={markRunCompleted}
+                style={{ flex:1, padding:'7px', fontSize:11, fontWeight:700, cursor:'pointer', border:'none', borderRadius:7, transition:'all 0.18s',
+                  background: runIsCompleted ? 'linear-gradient(135deg,#16a34a,#15803d)' : 'transparent',
+                  color: runIsCompleted ? 'white' : 'var(--text-secondary)',
+                  boxShadow: runIsCompleted ? '0 2px 8px rgba(22,163,74,0.4)' : 'none',
+                  letterSpacing:'0.05em',
+                }}>
+                ✓ COMPLETED
+              </button>
+            </div>
           </div>
 
           {/* Scrollable content */}
           <div style={{ overflowY:'auto', display:'flex', flexDirection:'column' }}>
             {runIsCompleted ? (
               /* ── COMPLETED view ── */
-              <div style={{ padding:'0 14px 16px', display:'flex', flexDirection:'column', gap:12 }}>
-                <div style={{ background:'var(--bg-depth)', borderRadius:8, padding:'14px', border:'1px solid var(--border-mid)' }}>
-                  <p style={{ fontSize:13, color:'var(--text-body)', margin:'0 0 12px', lineHeight:1.65, fontStyle:'italic' }}>
-                    This test run has been marked &apos;completed&apos;, finalising the results.
-                  </p>
-                  <button onClick={generatePDF}
-                    style={{ width:'100%', padding:'9px', background:'var(--bg-surface)', color:'var(--text-primary)', border:'1px solid var(--border-strong)', borderRadius:7, fontSize:12.5, fontWeight:600, cursor:'pointer', transition:'all 0.13s' }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--accent-hover)' }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-primary)' }}>
-                    view the test report
-                  </button>
-                </div>
-                <div style={{ background:'var(--bg-depth)', borderRadius:8, padding:'14px', border:'1px solid var(--border-mid)' }}>
-                  <p style={{ fontSize:13, color:'var(--text-body)', margin:'0 0 12px', lineHeight:1.65, fontStyle:'italic' }}>
-                    If further testing is required, or a change needs to be recorded, please put it back into &apos;in progress&apos;.
-                  </p>
-                  <button onClick={markRunInProgress}
-                    style={{ width:'100%', padding:'9px', background:'var(--bg-surface)', color:'var(--text-primary)', border:'1px solid var(--border-strong)', borderRadius:7, fontSize:12.5, fontWeight:600, cursor:'pointer', transition:'all 0.13s' }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--accent-hover)' }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-primary)' }}>
-                    go back to in-progress
-                  </button>
-                </div>
-                <div style={{ background:'var(--bg-depth)', borderRadius:8, padding:'14px', border:'1px solid var(--border-mid)' }}>
-                  <p style={{ fontSize:13, color:'var(--text-body)', margin:'0 0 12px', lineHeight:1.65, fontStyle:'italic' }}>
-                    Alternatively, use the Retest option if you want to prepare for a re-run of this test run, for example on a new build.
-                  </p>
-                  <button onClick={() => setAddingRun(true)}
-                    style={{ width:'100%', padding:'9px', background:'var(--bg-surface)', color:'var(--text-primary)', border:'1px solid var(--border-strong)', borderRadius:7, fontSize:12.5, fontWeight:600, cursor:'pointer', transition:'all 0.13s' }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--accent-hover)' }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-strong)'; e.currentTarget.style.color='var(--text-primary)' }}>
-                    start a retest
-                  </button>
-                </div>
+              <div style={{ padding:'12px 14px 16px', display:'flex', flexDirection:'column', gap:10 }}>
+                {[
+                  { text:"This run is marked completed. View the final test report.", action: generatePDF, label:'📄 View Test Report', accent: false },
+                  { text:"Need to record more results? Reopen this run.", action: markRunInProgress, label:'↩ Back to In Progress', accent: false },
+                  { text:"Testing a new build? Start a fresh retest run.", action: () => setAddingRun(true), label:'⟳ Start a Retest', accent: true },
+                ].map(({ text, action, label, accent }) => (
+                  <div key={label} style={{ background:'var(--bg-depth)', borderRadius:10, padding:'12px', border:'1px solid var(--border-mid)' }}>
+                    <p style={{ fontSize:12, color:'var(--text-muted)', margin:'0 0 10px', lineHeight:1.6 }}>{text}</p>
+                    <button onClick={action}
+                      style={{ width:'100%', padding:'9px', borderRadius:7, fontSize:12.5, fontWeight:700, cursor:'pointer', transition:'all 0.13s', border:'none',
+                        background: accent ? 'linear-gradient(135deg,#0ea5e9,#0284c7)' : 'var(--bg-elevated)',
+                        color: accent ? 'white' : 'var(--text-primary)',
+                        boxShadow: accent ? '0 3px 12px rgba(14,165,233,0.35)' : 'none',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.opacity='0.85' }}
+                      onMouseLeave={e => { e.currentTarget.style.opacity='1' }}>
+                      {label}
+                    </button>
+                  </div>
+                ))}
               </div>
             ) : (
               /* ── IN PROGRESS view ── */
               <>
-                {activeRow && activeRow.type === 'case' && (
-                  <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0, height:90, boxSizing:'border-box', display:'flex', flexDirection:'column' }}>
-                    <div style={{ fontSize:10, color:'var(--text-muted)', marginBottom:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', flexShrink:0 }}>Testing:</div>
-                    <div style={{ flex:1, overflowY:'auto', minHeight:0 }}>
+                {/* Active test case */}
+                <div style={{ margin:'10px 14px 0', flexShrink:0 }}>
+                  {activeRow && activeRow.type === 'case' ? (
+                    <div style={{ background:'var(--bg-depth)', borderRadius:10, padding:'10px 12px', border:'1px solid var(--border-mid)', borderLeft:'3px solid #0ea5e9', height:100, overflowY:'auto', boxSizing:'border-box' }}>
+                      <div style={{ fontSize:9, fontWeight:700, color:'#0ea5e9', letterSpacing:'0.1em', textTransform:'uppercase', marginBottom:5 }}>Currently Testing</div>
                       <p style={{ fontSize:12.5, color:'var(--text-body)', margin:0, lineHeight:1.5 }}>
-                        {activeRow.number ? `${activeRow.number}: ` : ''}{activeRow.title}
+                        {activeRow.number ? <span style={{ color:'var(--accent)', fontWeight:700, marginRight:4 }}>{activeRow.number}</span> : null}{activeRow.title}
                       </p>
                       {activeResult && activeResult.status !== 'not_run' && (
-                        <div style={{ marginTop:4, fontSize:10, padding:'2px 7px', borderRadius:5, display:'inline-block', fontWeight:700, textTransform:'uppercase',
+                        <div style={{ marginTop:6, fontSize:10, padding:'2px 8px', borderRadius:20, display:'inline-block', fontWeight:700, textTransform:'uppercase',
                           background: activeResult.status==='pass' ? 'rgba(34,197,94,0.15)' : activeResult.status==='fail' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
                           color: activeResult.status==='pass' ? '#22c55e' : activeResult.status==='fail' ? '#ef4444' : '#f59e0b',
+                          border: `1px solid ${activeResult.status==='pass' ? 'rgba(34,197,94,0.3)' : activeResult.status==='fail' ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}`,
                         }}>
-                          Current: {activeResult.status}
+                          {activeResult.status}
                         </div>
                       )}
                     </div>
-                  </div>
-                )}
-                {!activeRow && (
-                  <div style={{ padding:'16px 14px', fontSize:12, color:'var(--text-muted)', fontStyle:'italic', height:90, boxSizing:'border-box' }}>
-                    Click a test case row to start marking results.
-                  </div>
-                )}
+                  ) : (
+                    <div style={{ background:'var(--bg-depth)', borderRadius:10, padding:'12px', border:'1px dashed var(--border-mid)', textAlign:'center', height:100, boxSizing:'border-box', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                      <p style={{ fontSize:12, color:'var(--text-dim)', fontStyle:'italic', margin:0 }}>Click a test case row to start marking results.</p>
+                    </div>
+                  )}
+                </div>
 
                 {/* Comments */}
-                <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
-                  <label style={{ fontSize:10, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6, display:'block' }}>COMMENTS</label>
+                <div style={{ padding:'10px 14px 0', flexShrink:0 }}>
+                  <label style={{ fontSize:9, fontWeight:700, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:5, display:'block' }}>Comments</label>
                   <textarea ref={panelCommentRef} onBlur={savePanelNote}
                     placeholder="Add observations or notes for this test case..."
                     rows={3}
-                    style={{ width:'100%', padding:'7px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:6, fontSize:12, color:'var(--text-body)', resize:'none', outline:'none', fontFamily:'inherit', boxSizing:'border-box' }} />
+                    style={{ width:'100%', padding:'8px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:8, fontSize:12, color:'var(--text-body)', resize:'none', outline:'none', fontFamily:'inherit', boxSizing:'border-box', transition:'border-color 0.13s' }}
+                    onFocus={e => (e.target.style.borderColor='rgba(14,165,233,0.5)')}
+                    onBlur={e => { savePanelNote(); e.target.style.borderColor='var(--border-mid)' }} />
                 </div>
 
                 {/* Bug tracking */}
-                <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
-                  <label style={{ display:'block', fontSize:10, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:6 }}>BUG TRACKING</label>
+                <div style={{ padding:'8px 14px 0', flexShrink:0 }}>
+                  <label style={{ display:'block', fontSize:9, fontWeight:700, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:5 }}>Bug / Ticket</label>
                   <input ref={panelBugIdRef} onBlur={savePanelNote}
-                    placeholder="Bug ID or ticket reference (e.g. BUG-123)"
-                    style={{ width:'100%', padding:'7px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:6, fontSize:12, color:'var(--text-body)', outline:'none', boxSizing:'border-box' }} />
+                    placeholder="e.g. BUG-123 or JIRA-456"
+                    style={{ width:'100%', padding:'8px 10px', background:'var(--bg-depth)', border:'1px solid var(--border-mid)', borderRadius:8, fontSize:12, color:'var(--text-body)', outline:'none', boxSizing:'border-box', transition:'border-color 0.13s' }}
+                    onFocus={e => (e.target.style.borderColor='rgba(14,165,233,0.5)')}
+                    onBlur={e => { savePanelNote(); e.target.style.borderColor='var(--border-mid)' }} />
                 </div>
 
                 {/* Action buttons */}
-                <div style={{ padding:'12px 14px', flexShrink:0 }}>
+                <div style={{ padding:'10px 14px 14px', flexShrink:0 }}>
+                  {/* PASS / FAIL */}
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
                     <button onClick={() => handlePanelStatus('pass')}
-                      style={{ padding:'11px', background:'#16a34a', color:'white', border:'none', borderRadius:7, fontSize:14, fontWeight:700, cursor:'pointer', letterSpacing:'0.03em' }}>
-                      PASS ✓
+                      style={{ padding:'12px 8px', background:'linear-gradient(135deg,#16a34a,#15803d)', color:'white', border:'none', borderRadius:9, fontSize:13, fontWeight:800, cursor:'pointer', letterSpacing:'0.04em', boxShadow:'0 4px 14px rgba(22,163,74,0.45)', transition:'all 0.13s' }}
+                      onMouseEnter={e => { e.currentTarget.style.boxShadow='0 6px 20px rgba(22,163,74,0.6)'; e.currentTarget.style.transform='translateY(-1px)' }}
+                      onMouseLeave={e => { e.currentTarget.style.boxShadow='0 4px 14px rgba(22,163,74,0.45)'; e.currentTarget.style.transform='none' }}>
+                      ✓ PASS
                     </button>
                     <button onClick={() => handlePanelStatus('fail')}
-                      style={{ padding:'11px', background:'#dc2626', color:'white', border:'none', borderRadius:7, fontSize:14, fontWeight:700, cursor:'pointer', letterSpacing:'0.03em' }}>
-                      FAIL ✗
+                      style={{ padding:'12px 8px', background:'linear-gradient(135deg,#dc2626,#b91c1c)', color:'white', border:'none', borderRadius:9, fontSize:13, fontWeight:800, cursor:'pointer', letterSpacing:'0.04em', boxShadow:'0 4px 14px rgba(220,38,38,0.45)', transition:'all 0.13s' }}
+                      onMouseEnter={e => { e.currentTarget.style.boxShadow='0 6px 20px rgba(220,38,38,0.6)'; e.currentTarget.style.transform='translateY(-1px)' }}
+                      onMouseLeave={e => { e.currentTarget.style.boxShadow='0 4px 14px rgba(220,38,38,0.45)'; e.currentTarget.style.transform='none' }}>
+                      ✕ FAIL
                     </button>
                   </div>
+
+                  {/* BLOCKED / QUERY / EXCLUDE */}
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:6, marginBottom:8 }}>
                     {([
-                      { s:'blocked' as TestStatus, label:'BLOCKED', color:'#f59e0b', border:'rgba(245,158,11,0.3)' },
-                      { s:'query'   as TestStatus, label:'QUERY',   color:'#3b82f6', border:'rgba(59,130,246,0.3)' },
-                      { s:'exclude' as TestStatus, label:'EXCLUDE', color:'#64748b', border:'rgba(100,116,139,0.3)' },
-                    ] as const).map(({ s, label, color, border }) => (
+                      { s:'blocked' as TestStatus, label:'Blocked', color:'#f59e0b', bg:'rgba(245,158,11,0.1)',  border:'rgba(245,158,11,0.35)' },
+                      { s:'query'   as TestStatus, label:'Query',   color:'#60a5fa', bg:'rgba(59,130,246,0.1)',  border:'rgba(59,130,246,0.35)' },
+                      { s:'exclude' as TestStatus, label:'Exclude', color:'#94a3b8', bg:'rgba(100,116,139,0.1)', border:'rgba(100,116,139,0.35)' },
+                    ] as const).map(({ s, label, color, bg, border }) => (
                       <button key={s} onClick={() => handlePanelStatus(s)}
-                        style={{ padding:'7px 4px', background:'var(--bg-depth)', color, border:`1px solid ${border}`, borderRadius:6, fontSize:10.5, fontWeight:700, cursor:'pointer', textTransform:'uppercase' }}>
+                        style={{ padding:'7px 4px', background:bg, color, border:`1px solid ${border}`, borderRadius:7, fontSize:10, fontWeight:700, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.04em', transition:'all 0.13s' }}
+                        onMouseEnter={e => { e.currentTarget.style.filter='brightness(1.25)'; e.currentTarget.style.transform='translateY(-1px)' }}
+                        onMouseLeave={e => { e.currentTarget.style.filter='none'; e.currentTarget.style.transform='none' }}>
                         {label}
                       </button>
                     ))}
                   </div>
+
+                  {/* Clear result */}
                   <div style={{ marginBottom:8 }}>
                     <button
                       onClick={() => {
@@ -1864,36 +1883,35 @@ export default function ScriptPage() {
                         const runId = activeRunId
                         const rowId = activeRowId
                         const prevStatus = resultsMap[runId]?.[rowId]?.status
-                        // 1. Build updated map with entry removed
                         const updatedMap = { ...resultsMap, [runId]: { ...resultsMap[runId] } }
                         delete updatedMap[runId][rowId]
-                        // 2. Optimistic UI — instant, no reload
                         setResultsMap(updatedMap)
                         if (topStats) setTopStats(applyStatusChange(topStats, prevStatus, 'not_run'))
                         setAllRunsStats(sumStats(runs.map(run =>
                           computeStats(caseRows, Object.values(updatedMap[run.id] || {}))
                         )))
-                        // 3. Persist in background
                         setResult(runId, rowId, 'not_run', getPanelComment(), getPanelBugId()).catch(console.error)
                       }}
-                      style={{ width:'100%', padding:'8px', background:'var(--bg-depth)', color:'#ef4444', border:'1px solid rgba(239,68,68,0.3)', borderRadius:7, fontSize:11, fontWeight:700, cursor:'pointer', letterSpacing:'0.04em', transition:'all 0.13s' }}
-                      onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.08)'; e.currentTarget.style.borderColor='rgba(239,68,68,0.6)' }}
-                      onMouseLeave={e => { e.currentTarget.style.background='var(--bg-depth)'; e.currentTarget.style.borderColor='rgba(239,68,68,0.3)' }}>
-                      ✕ CLEAR RESULT
+                      style={{ width:'100%', padding:'7px', background:'transparent', color:'#f87171', border:'1px dashed rgba(239,68,68,0.4)', borderRadius:7, fontSize:11, fontWeight:600, cursor:'pointer', letterSpacing:'0.04em', transition:'all 0.13s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.1)'; e.currentTarget.style.borderColor='rgba(239,68,68,0.65)'; e.currentTarget.style.color='#fca5a5' }}
+                      onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.borderColor='rgba(239,68,68,0.4)'; e.currentTarget.style.color='#f87171' }}>
+                      ✕ Clear Result
                     </button>
                   </div>
+
+                  {/* Prev / Next */}
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
                     <button onClick={() => handlePanelNav('prev')}
-                      style={{ padding:'9px', background:'var(--bg-depth)', color:'var(--text-secondary)', border:'1px solid var(--border-mid)', borderRadius:7, fontSize:12, fontWeight:700, cursor:'pointer', transition:'all 0.13s' }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--text-primary)' }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-mid)'; e.currentTarget.style.color='var(--text-secondary)' }}>
-                      ◀ PREV
+                      style={{ padding:'9px', background:'var(--bg-depth)', color:'var(--text-secondary)', border:'1px solid var(--border-mid)', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer', transition:'all 0.13s', letterSpacing:'0.03em' }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor='rgba(14,165,233,0.5)'; e.currentTarget.style.color='var(--accent)'; e.currentTarget.style.background='rgba(14,165,233,0.06)' }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-mid)'; e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.background='var(--bg-depth)' }}>
+                      ← Prev
                     </button>
                     <button onClick={() => handlePanelNav('next')}
-                      style={{ padding:'9px', background:'var(--bg-depth)', color:'var(--text-secondary)', border:'1px solid var(--border-mid)', borderRadius:7, fontSize:12, fontWeight:700, cursor:'pointer', transition:'all 0.13s' }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor='var(--border-accent)'; e.currentTarget.style.color='var(--text-primary)' }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-mid)'; e.currentTarget.style.color='var(--text-secondary)' }}>
-                      NEXT ▶
+                      style={{ padding:'9px', background:'var(--bg-depth)', color:'var(--text-secondary)', border:'1px solid var(--border-mid)', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer', transition:'all 0.13s', letterSpacing:'0.03em' }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor='rgba(14,165,233,0.5)'; e.currentTarget.style.color='var(--accent)'; e.currentTarget.style.background='rgba(14,165,233,0.06)' }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border-mid)'; e.currentTarget.style.color='var(--text-secondary)'; e.currentTarget.style.background='var(--bg-depth)' }}>
+                      Next →
                     </button>
                   </div>
                 </div>
@@ -1942,21 +1960,30 @@ export default function ScriptPage() {
 
             {rows.find(r => r.id === rowMenu.rowId)?.type === 'case' ? (
               <>
-                <MenuItem icon="⊡" label="Open details" onClick={() => { openDetail(rowMenu.rowId); setRowMenu(null) }} />
-                <MenuItem icon="≡" label="Make Heading" onClick={() => makeHeading(rowMenu.rowId)} />
+                <MenuItem icon="📋" label="Open details" onClick={() => { openDetail(rowMenu.rowId); setRowMenu(null) }} />
+                <MenuItem icon="H" label="Make Heading" onClick={() => makeHeading(rowMenu.rowId)} />
               </>
             ) : (
-              <MenuItem icon="☐" label="Make Test Case" onClick={() => makeCase(rowMenu.rowId)} />
+              <MenuItem icon="✓" label="Make Test Case" onClick={() => makeCase(rowMenu.rowId)} />
             )}
             <MenuItem
-              icon="✎"
+              icon="✏️"
               label="Edit text"
               onClick={() => { const r = rows.find(x => x.id === rowMenu.rowId); if (r) { setEditingRowId(r.id); setEditTitle(r.title) } setRowMenu(null) }}
             />
 
             {/* Separator before danger zone */}
             <div style={{ height: 1, background: 'var(--border)', margin: '5px 0' }} />
-            <MenuItem icon="✕" label="Delete row" onClick={() => { const id = rowMenu.rowId; setRows(prev => prev.filter(r => r.id !== id)); setRowMenu(null); deleteRow(scriptId, id).catch(console.error) }} danger />
+            <MenuItem icon="✕" label="Delete row" onClick={() => {
+              const id = rowMenu.rowId
+              const updatedRows = rows.filter(r => r.id !== id)
+              setRows(updatedRows)
+              setRowMenu(null)
+              // Delete then renormalize sort_orders so no gaps/duplicates remain
+              deleteRow(scriptId, id)
+                .then(() => reorderRows(scriptId, updatedRows))
+                .catch(console.error)
+            }} danger />
           </div>
         </>,
         document.body
